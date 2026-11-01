@@ -215,6 +215,7 @@ DEFAULT_RULES = [
     ("uber ", "Public Transit & Rideshare", "Uber"), ("uber*", "Public Transit & Rideshare", "Uber"), ("lyft", "Public Transit & Rideshare", "Lyft"),
     ("bart", "Public Transit & Rideshare", "BART"), ("mta", "Public Transit & Rideshare", "MTA"), ("clipper", "Public Transit & Rideshare", "Clipper"),
     ("geico", "Auto Insurance & Maintenance", "GEICO"), ("progressive", "Auto Insurance & Maintenance", "Progressive"), ("state farm", "Auto Insurance & Maintenance", "State Farm"),
+    ("toyota financial", "Auto Payment", "Toyota Financial"), ("honda financial", "Auto Payment", "Honda Financial"), ("ford credit", "Auto Payment", "Ford Credit"), ("ally auto", "Auto Payment", "Ally Auto"), ("auto pymt", "Auto Payment", ""), ("auto loan", "Auto Payment", ""), ("atm withdrawal", "Transfer", "ATM withdrawal"),
     ("parking", "Parking & Tolls", ""), ("fastrak", "Parking & Tolls", "FasTrak"), ("toll", "Parking & Tolls", ""),
     ("amazon", "Shopping", "Amazon"), ("amzn", "Shopping", "Amazon"), ("best buy", "Shopping", "Best Buy"), ("apple.com", "Shopping", "Apple"), ("ikea", "Shopping", "IKEA"),
     ("netflix", "Subscriptions", "Netflix"), ("spotify", "Subscriptions", "Spotify"), ("hulu", "Subscriptions", "Hulu"), ("disney", "Subscriptions", "Disney+"),
