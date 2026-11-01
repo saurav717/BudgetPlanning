@@ -133,3 +133,24 @@ def test_link_token_update_mode(conn):
     assert body["access_token"] == "tok" and "products" not in body
     c.create_link_token()
     assert fake.calls[-1][1]["products"] == ["transactions"]
+
+
+def test_relay_mode_sends_no_secret(monkeypatch):
+    """The browser build talks to the Cloudflare relay; it must never hold or send Plaid keys."""
+    sent = []
+
+    class FakeHTTP:
+        def post(self, url, json=None, headers=None):
+            sent.append((url, json, headers))
+            return httpx.Response(200, json={"link_token": "link-x"})
+
+    monkeypatch.setenv("LEDGER_RELAY_TOKEN", "google-token")
+    monkeypatch.delenv("PLAID_CLIENT_ID", raising=False)
+    monkeypatch.delenv("PLAID_SECRET", raising=False)
+    c = plaid.PlaidClient(http=FakeHTTP(), relay_url="https://ledger.example/relay/")
+    assert c.configured
+    assert c.create_link_token()["link_token"] == "link-x"
+    url, body, headers = sent[0]
+    assert url == "https://ledger.example/relay/plaid/link/token/create"
+    assert "secret" not in body and "client_id" not in body
+    assert headers == {"Authorization": "Bearer google-token"}

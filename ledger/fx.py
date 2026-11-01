@@ -4,8 +4,6 @@ from __future__ import annotations
 import sqlite3
 from datetime import datetime
 
-import httpx
-
 from .db import DEFAULT_PER_USD, get_setting, set_setting
 
 SYMBOLS = {"USD": "$", "INR": "₹", "EUR": "€", "GBP": "£", "CAD": "C$", "AUD": "A$", "SGD": "S$", "AED": "AED ", "JPY": "¥", "CHF": "CHF "}
@@ -36,9 +34,11 @@ def set_rate(conn: sqlite3.Connection, currency: str, per_usd: float, source: st
     conn.commit()
 
 
-def refresh(conn: sqlite3.Connection, http: httpx.Client | None = None) -> dict:
+def refresh(conn: sqlite3.Connection, http=None) -> dict:
     """Pull latest ECB reference rates (free, no key). Manual rates are kept for currencies the feed lacks."""
-    http = http or httpx.Client(timeout=15)
+    if http is None:
+        from .webhttp import default_client
+        http = default_client(15)
     errors = []
     for url in ("https://api.frankfurter.dev/v1/latest?base=USD", "https://api.frankfurter.app/latest?from=USD"):
         try:

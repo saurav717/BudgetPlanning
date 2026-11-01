@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -280,7 +280,7 @@ TX_SELECT = """SELECT t.*, c.name AS category, c."group" AS category_group, c.ki
 def list_transactions(start: Optional[str] = None, end: Optional[str] = None, account_id: Optional[int] = None,
                       category_id: Optional[int] = None, q: Optional[str] = None, uncategorized: bool = False,
                       unreviewed: bool = False, include_hidden: bool = False, tag: Optional[str] = None,
-                      limit: int = Query(200, le=2000), offset: int = 0, conn=Depends(get_conn)):
+                      limit: int = Query(200, le=100000), offset: int = 0, conn=Depends(get_conn)):
     where, params = [], []
     if start: where.append("t.date >= ?"); params.append(start)
     if end: where.append("t.date <= ?"); params.append(end)
@@ -456,11 +456,11 @@ def export_csv(conn=Depends(get_conn)):
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(["date", "account", "merchant", "description", "amount", "category", "group", "notes", "tags"])
-    for t in list_transactions(limit=2000, offset=0, include_hidden=True, conn=conn)["items"]:
+    for t in list_transactions(start=None, end=None, account_id=None, category_id=None, q=None, uncategorized=False,
+                               unreviewed=False, include_hidden=True, tag=None, limit=100000, offset=0, conn=conn)["items"]:
         w.writerow([t["date"], t["account"], t["merchant"], t["description"], t["amount"], t["category"], t["category_group"], t["notes"], " ".join(t["tags"])])
-    buf.seek(0)
-    return StreamingResponse(iter([buf.getvalue()]), media_type="text/csv",
-                             headers={"Content-Disposition": "attachment; filename=transactions.csv"})
+    return Response(buf.getvalue(), media_type="text/csv",
+                    headers={"Content-Disposition": "attachment; filename=transactions.csv"})
 
 
 # ---------------- categories / rules / tags ----------------
@@ -720,8 +720,17 @@ def get_holdings(conn=Depends(get_conn)):
 
 @app.get("/api/import/profiles")
 def import_profiles():
-    return [{"name": p.name, "date": p.date, "description": p.description, "amount": p.amount,
+    return [{"name": p.name, "label": p.label or p.name, "date": p.date, "description": p.description, "amount": p.amount,
              "debit": p.debit, "credit": p.credit, "negate": p.negate} for p in importer.PROFILES.values()]
+
+
+class InspectIn(BaseModel):
+    text: str
+
+
+@app.post("/api/import/inspect")
+def import_inspect(b: InspectIn):
+    return importer.inspect(b.text)
 
 
 @app.post("/api/import")
@@ -732,6 +741,23 @@ async def import_file(file: UploadFile = File(...), account_id: int = Form(...),
         profile = importer.detect_profile(text)
     res = importer.import_csv(conn, account_id, text, profile, dry_run=dry_run)
     pairs = 0 if dry_run else match_transfers(conn)
+    return {"profile": profile, "transfer_pairs": pairs, **res.as_dict()}
+
+
+class ImportText(BaseModel):
+    account_id: int
+    text: str
+    profile: str = "auto"
+    dry_run: bool = False
+    mapping: Optional[dict] = None
+
+
+@app.post("/api/import-text")
+def import_text(b: ImportText, conn=Depends(get_conn)):
+    """Same as /api/import but with the file contents in JSON (used by the web UI in both modes)."""
+    profile = importer.detect_profile(b.text) if b.profile == "auto" else b.profile
+    res = importer.import_csv(conn, b.account_id, b.text, profile, dry_run=b.dry_run, mapping=b.mapping)
+    pairs = 0 if b.dry_run else match_transfers(conn)
     return {"profile": profile, "transfer_pairs": pairs, **res.as_dict()}
 
 
@@ -818,6 +844,19 @@ def plaid_sandbox_link(body: dict | None = None, conn=Depends(get_conn)):
 
 
 # ---------------- frontend ----------------
+
+@app.get("/config.js", include_in_schema=False)
+def config_js():
+    return Response('window.LEDGER_CONFIG = {"mode": "server"};\n', media_type="application/javascript")
+
+
+@app.get("/transparency.json", include_in_schema=False)
+def transparency():
+    p = WEB_DIR.parent / "transparency.json"
+    if not p.exists():
+        raise HTTPException(404)
+    return FileResponse(p)
+
 
 @app.get("/", include_in_schema=False)
 def index():

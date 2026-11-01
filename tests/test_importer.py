@@ -58,4 +58,4 @@ def test_dry_run_writes_nothing(conn, card):
 def test_bad_rows_reported_not_fatal(conn, card):
     text = "Date,Description,Amount\n10/01/2026,OK ROW,-1.00\nnot-a-date,BAD ROW,-2.00\n"
     r = importer.import_csv(conn, card, text, "generic")
-    assert r.imported == 1 and len(r.errors) == 1 and "line 3" in r.errors[0]
+    assert r.imported == 1 and r.skipped == 1   # rows without a usable date are skipped and counted

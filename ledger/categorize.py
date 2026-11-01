@@ -21,8 +21,51 @@ _NOISE = [
 _NOISE_RE = [re.compile(p, re.I) for p in _NOISE]
 
 
+# ---- Indian bank narrations -------------------------------------------------------------
+_IN_START = re.compile(r"^\s*(UPI|NEFT|IMPS|RTGS|ATW|NWD|EAW|ATM|POS|ACH|NACH|ECS|MMT|INF|BIL|TO TRANSFER|BY TRANSFER|BY CLG|TRF|INB|MB|CMS)\b", re.I)
+_IN_DROP = {"UPI", "DR", "CR", "P2A", "P2M", "NEFT", "IMPS", "RTGS", "MMT", "INF", "INB", "BIL", "ONL", "TRF", "TO", "BY", "FROM",
+            "TRANSFER", "PAYMENT", "PAY", "PAID", "NA", "UPIINTENT", "COLLECT", "REQUEST", "MB", "IB", "CMS", "ACH", "NACH", "ECS",
+            "D", "C", "CLG", "SENT", "RECEIVED", "REF", "REFNO", "TXN", "SBIN", "HDFC", "ICIC", "UTIB", "KKBK", "YESB", "PUNB",
+            "BARB", "CNRB", "IDIB", "IOBA", "UBIN", "INDB", "FDRL", "IDFB", "PYTM", "AIRP", "JIOP", "PAYTM", "OK", "NO"}
+_IN_SUFFIX = re.compile(r"\b(PRIVATE|PVT|LIMITED|LTD|TECHNOLOGIES|TECHNOLOGY|SERVICES|SOLUTIONS|INDIA|RETAIL|PAYMENTS|COMMERCE)\b\.?", re.I)
+
+
+_BANK_PREFIX = re.compile(r"^\s*(TO|BY)\s+TRANSFER\s*-\s*(?=UPI|IMPS|NEFT|RTGS)", re.I)
+
+
+def clean_indian_narration(description: str) -> str | None:
+    """'UPI/DR/412345678901/SWIGGY LIMITED/YESB/swiggy@ybl/Payment' -> 'Swiggy'.
+    'NEFT CR-ICIC0000104-ACME TECHNOLOGIES PVT LTD-SALARY' -> 'Acme'. Returns None if not an Indian narration."""
+    if not _IN_START.match(description or ""):
+        return None
+    up = description.upper()
+    if re.match(r"^\s*(ATW|NWD|EAW|ATM)\b", up) or "ATM WDL" in up or "CASH WDL" in up:
+        return "ATM withdrawal"
+    tokens = [t.strip(" .:") for t in re.split(r"[/\-|:*]+", description) if t.strip(" .:")]
+    for t in tokens:
+        tu = t.upper().replace(" ", "")
+        if tu in _IN_DROP or "@" in t or all(w in _IN_DROP for w in t.upper().split()):
+            continue
+        if re.fullmatch(r"[A-Z]{4}0[A-Z0-9]{6}", tu):      # IFSC code
+            continue
+        if re.fullmatch(r"[A-Z]*\d[\dA-Z]*", tu) and sum(ch.isdigit() for ch in tu) >= 4:  # refs, card / account numbers
+            continue
+        if len(re.sub(r"[^A-Za-z]", "", t)) < 3:
+            continue
+        name = _IN_SUFFIX.sub(" ", t)
+        name = re.sub(r"\s+", " ", name).strip()
+        if len(name) < 3:
+            continue
+        return " ".join(w if w.upper() in _ACRONYMS else w.title() for w in name.split()[:4])
+    vpa = next((t for t in tokens if "@" in t), None)  # fall back to the UPI ID, e.g. 'rahul.k@okhdfcbank'
+    return vpa.split("@")[0].replace(".", " ").title() if vpa else None
+
+
 def clean_merchant(description: str) -> str:
     """Turn 'SQ *BLUE BOTTLE COFFEE 0423 SAN FRANCISCO CA 94110' into 'Blue Bottle Coffee'."""
+    indian = clean_indian_narration(description)
+    if indian:
+        return indian
     s = description
     for rx in _NOISE_RE:
         s = rx.sub(" ", s)
@@ -64,6 +107,8 @@ class Categorizer:
 
     def match(self, description: str, merchant: str) -> tuple[int | None, str | None, int | None]:
         """Return (category_id, rename_to, rule_id) for the highest-priority matching rule."""
+        # SBI prefixes every UPI debit/credit with 'TO TRANSFER-' / 'BY TRANSFER-'; that's not a transfer.
+        description = _BANK_PREFIX.sub("", description or "")
         hay = f"{description} || {merchant}".lower()
         for r, rx in self.rules:
             hit = rx.search(hay) if rx else (r["pattern"].lower() in hay)

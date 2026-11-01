@@ -495,6 +495,11 @@ def goal_progress(conn, g: dict) -> dict:
 
 # ---------------- the daily briefing ----------------
 
+def _md(iso: str) -> str:
+    """'2026-12-05' -> 'Dec 5' (portable; '%-d' isn't available everywhere, e.g. WebAssembly)."""
+    d = date.fromisoformat(iso)
+    return f"{d:%b} {d.day}"
+
 def briefing(conn, profile: dict | None = None, pace_data: dict | None = None, fc: dict | None = None) -> list[dict]:
     """A few plain-English sentences about where you stand today."""
     profile = profile or get_profile(conn)
@@ -524,12 +529,11 @@ def briefing(conn, profile: dict | None = None, pace_data: dict | None = None, f
     f = fc or forecast(conn, 45, profile)
     if f["first_below_buffer"]:
         lines.append({"text": f"Heads up: spendable cash is projected to dip below your {money(f['buffer'])} buffer around "
-                              f"{date.fromisoformat(f['first_below_buffer']).strftime('%b %-d')}, bottoming at {signed(f['low']['balance'])} "
-                              f"on {date.fromisoformat(f['low']['date']).strftime('%b %-d')}.",
+                              f"{_md(f['first_below_buffer'])}, bottoming at {signed(f['low']['balance'])} on {_md(f['low']['date'])}.",
                       "tone": "serious"})
     else:
         lines.append({"text": f"Cash looks steady: the lowest point in the next {f['days']} days is {signed(f['low']['balance'])} "
-                              f"on {date.fromisoformat(f['low']['date']).strftime('%b %-d')}.", "tone": "good"})
+                              f"on {_md(f['low']['date'])}.", "tone": "good"})
     pr = profile.get("priorities") or []
     goals = conn.execute("SELECT * FROM goals WHERE archived=0 ORDER BY target_date").fetchall()
     if "support_family" in pr or profile.get("second_currency"):

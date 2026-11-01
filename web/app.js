@@ -94,7 +94,26 @@ const TYPE_SLOT = { checking: 1, savings: 3, credit: 2, investment: 7, loan: 5, 
 const TAX_TYPES = { '': 'Not tax-advantaged', '401k': '401(k)', roth_401k: 'Roth 401(k)', '403b': '403(b)', ira: 'Traditional IRA', roth_ira: 'Roth IRA', hsa: 'HSA' };
 
 // ---------- api ----------
+const BACKEND = window.LedgerBackend;  // set in browser mode (static site + Google Drive), null when served by `ledger serve`
+async function apiRaw(path, opts = {}) {
+  if (BACKEND) {
+    const [p, q] = ('/api' + path).split('?');
+    const r = await BACKEND.request(opts.method || 'GET', p, q || '', opts.body === undefined ? null : JSON.stringify(opts.body));
+    return { ok: r.status < 400, status: r.status, text: r.body, type: r.content_type };
+  }
+  const init = { method: opts.method || 'GET', headers: {} };
+  if (opts.body !== undefined) { init.headers['Content-Type'] = 'application/json'; init.body = JSON.stringify(opts.body); }
+  const r = await fetch('/api' + path, init);
+  return { ok: r.ok, status: r.status, text: await r.text(), type: r.headers.get('content-type') || '' };
+}
 async function api(path, opts = {}) {
+  if (BACKEND) {
+    const r = await apiRaw(path, opts);
+    if (r.status === 204) return null;
+    let data = {}; try { data = r.text ? JSON.parse(r.text) : {}; } catch (e) {}
+    if (!r.ok) throw new Error(typeof data.detail === 'string' ? data.detail : data.detail ? JSON.stringify(data.detail) : 'Error ' + r.status);
+    return data;
+  }
   const init = { method: opts.method || 'GET', headers: {} };
   if (opts.body instanceof FormData) init.body = opts.body;
   else if (opts.body !== undefined) { init.headers['Content-Type'] = 'application/json'; init.body = JSON.stringify(opts.body); }
@@ -196,7 +215,7 @@ const NAV = [
   { label: 'Overview', items: [['dashboard', 'Dashboard', 'home'], ['health', 'Money checkup', 'heart'], ['insights', 'Insights', 'bulb'], ['reports', 'Reports', 'chart']] },
   { label: 'Money', items: [['accounts', 'Accounts', 'wallet'], ['transactions', 'Transactions', 'list'], ['recurring', 'Recurring', 'repeat'], ['investments', 'Investments', 'trending']] },
   { label: 'Plan', items: [['budget', 'Budget', 'pie'], ['forecast', 'Cash forecast', 'calendar'], ['goals', 'Goals', 'target'], ['home', 'Money home', 'send']] },
-  { label: '', items: [['settings', 'Settings', 'sliders']] },
+  { label: '', items: [['settings', 'Settings', 'sliders'], ['transparency', 'Funding & costs', 'piggy']] },
 ];
 const showsMoneyHome = () => !!(S.profile && (S.profile.second_currency || (S.profile.priorities || []).includes('support_family')));
 function drawNav(active, badges = {}) {
@@ -230,6 +249,14 @@ function catSelect(selected, attrs = '') {
 }
 const acctSelect = (selected, attrs = '', none = false) => `<select ${attrs}>${none ? '<option value="">— none —</option>' : ''}${S.accts.filter(a => !a.archived).map(a => `<option value="${a.id}" ${a.id === selected ? 'selected' : ''}>${h(a.name)}</option>`).join('')}</select>`;
 
+async function exportCsv() {
+  const r = await apiRaw('/export/transactions.csv');
+  const url = URL.createObjectURL(new Blob([r.text], { type: 'text/csv' }));
+  const a = Object.assign(document.createElement('a'), { href: url, download: `ledger-transactions-${todayIso()}.csv` });
+  document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+document.addEventListener('click', (e) => { if (e.target.closest('[data-export]')) exportCsv(); });
+
 const views = {};
 const ALIAS = { budgets: 'budget' };
 let renderSeq = 0;
@@ -242,6 +269,7 @@ async function render() {
   const name = views[view] ? view : 'dashboard';
   const main = $('#view');
   try {
+    if (BACKEND) await BACKEND.ready;
     await loadRefs();
     if (seq !== renderSeq) return;
     drawNav(name); drawMe(); drawThemeBtn(); chartDefaults();
@@ -552,6 +580,19 @@ async function syncPlaid() {
   finally { btn.classList.remove('spinning'); $('#sync-label').textContent = 'Sync banks'; }
 }
 $('#sync-btn').onclick = syncPlaid;
+if (BACKEND) {
+  const foot = $('.side-foot');
+  foot.insertAdjacentHTML('afterbegin', `<div class="save-status" id="save-status"></div>`);
+  const draw = (st) => {
+    const el = $('#save-status'); if (!el) return;
+    if (st.mode === 'demo') { el.innerHTML = `<span class="dot warn"></span><span>Demo · nothing is saved</span>`; return; }
+    if (st.mode !== 'drive') { el.innerHTML = ''; return; }
+    const txt = st.error === 'conflict' ? 'Changed elsewhere' : st.error ? 'Save failed, retrying…' : st.saving ? 'Saving to Drive…' : st.dirty ? 'Unsaved changes' : st.lastSaved ? `Encrypted & saved ${st.lastSaved.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : 'Encrypted in Drive';
+    el.innerHTML = `<span class="dot ${st.error ? 'bad' : st.saving || st.dirty ? 'busy' : 'ok'}"></span><span class="grow">${txt}</span><button class="icon-btn" id="lock-btn" title="Lock" style="width:26px;height:26px">${icon('shield', 14)}</button>`;
+    $('#lock-btn').onclick = () => BACKEND.lock();
+  };
+  BACKEND.onStatus(draw); draw(BACKEND.status());
+}
 
 // ======================================================================
 // accounts
@@ -629,7 +670,7 @@ function accountForm(a) {
 views.transactions = async (main, q) => {
   const st = { q: q.q || '', account_id: q.account_id || '', category_id: q.category_id || '', uncategorized: q.uncategorized === '1', unreviewed: q.unreviewed === '1', start: q.start || '', end: q.end || '', tag: q.tag || '', offset: 0 };
   const sel = new Set();
-  main.innerHTML = ph('Transactions', '<span id="tx-count">&nbsp;</span>', `<a class="btn" href="/api/export/transactions.csv">${icon('download', 15)} Export</a><button class="btn primary" id="add-tx">${icon('plus', 15)} Add</button>`) + `
+  main.innerHTML = ph('Transactions', '<span id="tx-count">&nbsp;</span>', `<button class="btn" data-export>${icon('download', 15)} Export</button><button class="btn primary" id="add-tx">${icon('plus', 15)} Add</button>`) + `
   <section class="card">
     <div class="toolbar"><div class="search"><span>${icon('search', 16)}</span><input type="search" id="f-q" placeholder="Search merchant, notes, amount…" value="${h(st.q)}"></div>
       <select id="f-acct"><option value="">All accounts</option>${S.accts.map(a => `<option value="${a.id}" ${st.account_id == a.id ? 'selected' : ''}>${h(a.name)}</option>`).join('')}</select>
@@ -702,6 +743,19 @@ async function txDetail(t0, done) {
       $('#add-split', m).onclick = () => $('#splits', m).insertAdjacentHTML('beforeend', splitRow({ amount: 0 }));
       $('#save-splits', m).onclick = async () => { const rows = $$('.split-row', m).map(r => ({ amount: +$('[name=s_amount]', r).value, category_id: +$('[name=s_cat]', r).value })); const sum = rows.reduce((s, r) => s + r.amount, 0); if (Math.abs(sum - t.amount) > .005) { $('#split-sum', m).textContent = `Splits add up to ${money(sum)}; need ${money(t.amount)}`; return; } try { await api(`/transactions/${t.id}/splits`, { method: 'PUT', body: rows.length > 1 ? rows : [] }); toast('Splits saved'); close(); done(); } catch (err) { toast(err.message); } };
     });
+}
+
+async function loadScript(src) {
+  return new Promise((res, rej) => { const s = document.createElement('script'); s.src = src; s.onload = res; s.onerror = () => rej(new Error('Could not load ' + src)); document.head.appendChild(s); });
+}
+/** Read a bank export as CSV text. Excel files (common for Indian banks) are converted in the browser. */
+async function fileToCsv(file) {
+  if (/\.(xlsx?|xlsm)$/i.test(file.name)) {
+    if (!window.XLSX) await loadScript('https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js');
+    const wb = XLSX.read(await file.arrayBuffer(), { type: 'array', cellDates: false, raw: false });
+    return XLSX.utils.sheet_to_csv(wb.Sheets[wb.SheetNames[0]], { blankrows: false });
+  }
+  return await file.text();
 }
 
 // ======================================================================
@@ -997,11 +1051,45 @@ views.insights = async (main) => {
 };
 
 // ======================================================================
+// funding & costs (public transparency)
+// ======================================================================
+views.transparency = async (main) => {
+  const [t, stats] = await Promise.all([
+    fetch('transparency.json', { cache: 'no-cache' }).then(r => r.ok ? r.json() : null).catch(() => null),
+    BACKEND ? fetch('relay/stats').then(r => r.ok ? r.json() : null).catch(() => null) : null,
+  ]);
+  if (!t) { main.innerHTML = ph('Funding & costs') + card(null, empty('No transparency.json published on this deployment.', 'heart')); return; }
+  const cur = t.currency || 'USD';
+  const sum = (arr, k) => (arr || []).reduce((s, x) => s + (+x.amount || 0), 0);
+  const months = [...(t.months || [])].sort((a, b) => a.month.localeCompare(b.month));
+  const totIn = months.reduce((s, m) => s + sum(m.income), 0), totOut = months.reduce((s, m) => s + sum(m.expenses), 0);
+  const last = months[months.length - 1];
+  const perConn = stats && stats.connections && last ? sum(last.expenses.filter(e => /plaid/i.test(e.item))) / stats.connections : null;
+  main.innerHTML = ph('Funding & costs', `Ledger is free and open source. It's paid for by donations, and every dollar in and out is listed here. Last updated ${t.updated ? fmtDate(t.updated, { month: 'long', day: 'numeric', year: 'numeric' }) : '—'}.`,
+    (t.funding_links || []).filter(l => l.url).map(l => `<a class="btn primary" href="${h(l.url)}" target="_blank" rel="noopener">${icon('heart', 15)} ${h(l.label)}</a>`).join('')) + `
+  <div class="tiles" style="margin-bottom:16px">
+    <div class="tile"><div class="t-label"><span class="t-ic">${icon('arrowDown', 15)}</span>Raised to date</div><div class="t-value">${money(totIn, { cur, cents: false })}</div><div class="t-sub">${plural(months.length, 'month')} on record</div></div>
+    <div class="tile"><div class="t-label"><span class="t-ic">${icon('arrowUp', 15)}</span>Spent to date</div><div class="t-value">${money(totOut, { cur, cents: false })}</div><div class="t-sub">${last ? `${money(sum(last.expenses), { cur, cents: false })} in ${fmtDate(last.month + '-01', { month: 'long' })}` : ''}</div></div>
+    <div class="tile"><div class="t-label"><span class="t-ic">${icon('piggy', 15)}</span>Balance</div><div class="t-value ${totIn - totOut < 0 ? 'bad' : ''}">${money(totIn - totOut, { cur, cents: false })}</div><div class="t-sub">${last && sum(last.expenses) ? `≈ ${Math.max(0, (totIn - totOut) / sum(last.expenses)).toFixed(1)} months of runway` : 'runway shown once costs are recorded'}</div></div>
+    <div class="tile"><div class="t-label"><span class="t-ic">${icon('bank', 15)}</span>Bank connections</div><div class="t-value">${stats ? stats.connections : '—'}</div><div class="t-sub">${stats ? `${plural(stats.users, 'person', )} connected${perConn != null ? ` · ${money(perConn, { cur })} each last month` : ''}` : 'live count from the relay'}</div></div>
+  </div>
+  <div class="grid g12">
+    <div class="span-8">${card('Month by month', months.length ? `<div style="overflow-x:auto"><table><thead><tr><th>Month</th><th>Item</th><th class="right">In</th><th class="right">Out</th></tr></thead><tbody>${[...months].reverse().map(m => `<tr><td colspan="4" style="background:var(--surface-2);font-weight:600;font-size:12px">${monthName(m.month)}</td></tr>${(m.income || []).map(x => `<tr><td></td><td>${h(x.source)}${x.note ? `<div class="tiny muted">${h(x.note)}</div>` : ''}</td><td class="right num pos">${money(+x.amount, { cur })}</td><td></td></tr>`).join('')}${(m.expenses || []).map(x => `<tr><td></td><td>${h(x.item)}${x.note ? `<div class="tiny muted">${h(x.note)}</div>` : ''}${x.receipt ? ` <a class="tiny" href="${h(x.receipt)}" target="_blank" rel="noopener">receipt</a>` : ''}</td><td></td><td class="right num">${money(+x.amount, { cur })}</td></tr>`).join('')}`).join('')}</tbody></table></div>` : empty('Nothing recorded yet.'))}</div>
+    <div class="span-4">${card('How this works', `<div class="stack small soft">
+      <p><b style="color:var(--text)">Your data never touches these costs.</b> It's encrypted in your browser and stored in your own Google Drive. Nobody running Ledger can read it.</p>
+      <p><b style="color:var(--text)">What the money pays for.</b> Mostly Plaid, which charges per connected bank account each month. Hosting runs on Cloudflare's free tier.</p>
+      <p><b style="color:var(--text)">Why there's a connection limit.</b> Each person can link a few banks so costs stay predictable. Statement import (including Indian banks) is free and unlimited.</p>
+      <p><b style="color:var(--text)">Where these numbers come from.</b> A file in the public repository, updated by the admins through reviewed pull requests, so every change has a history.</p>
+      <p><a href="https://github.com/saurav717/BudgetPlanning/blob/HEAD/transparency.json" target="_blank" rel="noopener">See the source file ${icon('chevR', 13)}</a></p></div>`)}</div>
+  </div>`;
+};
+
+// ======================================================================
 // settings
 // ======================================================================
 views.settings = async (main, q) => {
   const tab = q.tab || 'profile';
-  const TABS = [['profile', 'Profile'], ['dashboard', 'Dashboard'], ['connections', 'Connections & import'], ['categories', 'Categories'], ['rules', 'Rules'], ['currencies', 'Currencies'], ['data', 'Data']];
+  const TABS = [['profile', 'Profile'], ['dashboard', 'Dashboard'], ['connections', 'Connections & import'], ['categories', 'Categories'], ['rules', 'Rules'], ['currencies', 'Currencies'], ['data', BACKEND ? 'Vault & data' : 'Data']];
   main.innerHTML = ph('Settings') + `<nav class="tabs">${TABS.map(([k, l]) => `<a href="#settings?tab=${k}" class="${tab === k ? 'active' : ''}">${l}</a>`).join('')}</nav><div id="tab"></div>`;
   await SETTINGS[tab]($('#tab'));
   hydrateIcons(main);
@@ -1033,10 +1121,11 @@ const SETTINGS = {
     const [plaid, profiles] = await Promise.all([api('/plaid/status'), api('/import/profiles')]);
     el.innerHTML = `<div class="grid g2">${card('Bank connections (Plaid)', plaid.configured ? `<div class="row wrap" style="margin-bottom:14px"><span class="chip accent">${plaid.env}</span><span class="grow"></span><button class="btn primary" id="link-btn">${icon('link', 15)} Connect a bank</button>${plaid.env === 'sandbox' ? '<button class="btn" id="sandbox-btn">Add test bank</button>' : ''}<button class="btn" id="sync-now">${icon('refresh', 15)} Sync</button></div>
         <div class="list">${plaid.items.map(it => `<div class="li">${monoIc(it.institution_name || 'B', css('--s1'), 'bank')}<div class="grow"><div class="main-t">${h(it.institution_name || 'Institution')}</div><div class="sub-t">${it.accounts.map(a => h(a.name)).join(', ')}</div>${it.last_error ? `<div class="small bad">${h(it.last_error)}</div>` : `<div class="tiny muted">${it.last_synced_at ? 'synced ' + it.last_synced_at.slice(0, 16).replace('T', ' ') : 'never synced'}</div>`}</div><button class="btn sm" data-reauth="${it.id}">Re-auth</button><button class="btn sm ghost danger" data-unlink="${it.id}">Unlink</button></div>`).join('') || '<div class="muted small">No banks connected yet.</div>'}</div>`
+      : BACKEND ? `<p class="soft">Automatic bank connections aren't enabled on this deployment${BACKEND.status().mode === 'demo' ? ' in demo mode. Sign in to connect banks' : ''}. Import statements instead; it's free and works for every bank, including Indian banks.</p>`
       : `<p class="soft">Connect your banks, cards and brokerages so transactions and balances update automatically.</p><ol class="small soft" style="padding-left:18px;line-height:1.7"><li>Get free keys at <a href="https://dashboard.plaid.com/signup" target="_blank" rel="noopener">dashboard.plaid.com</a>.</li><li>Restart Ledger with them:</li></ol><pre class="code">PLAID_CLIENT_ID=… PLAID_SECRET=… PLAID_ENV=sandbox ledger serve</pre><p class="small muted">Use <span class="code">PLAID_ENV=production</span> for real banks once Plaid approves your account. Until then, import CSVs.</p>`)}
-      ${card('Import a CSV', `<p class="small soft">Download transactions from your bank's website and drop the file here. Duplicates are skipped, so overlapping imports are safe.</p>
-        <form class="form" id="imp"><div class="two"><label>Into account${acctSelect(null, 'name="account_id"')}</label><label>Bank format<select name="profile"><option value="auto">Auto-detect</option>${profiles.map(p => `<option value="${p.name}">${p.name.replace('_', ' ')}</option>`).join('')}</select></label></div>
-        <div class="dropzone" id="dz">${icon('upload', 22)}<div style="margin-top:6px">Drop a CSV or <label style="display:inline;color:var(--accent);cursor:pointer;font-weight:600">browse<input type="file" name="file" accept=".csv,text/csv" hidden></label></div><div id="fname" class="small" style="margin-top:4px;color:var(--text)"></div></div>
+      ${card('Import a statement', `<p class="small soft">Download a statement from your bank's website and drop it here. CSV and Excel both work, including ICICI, HDFC, SBI, Axis and Kotak statements. Duplicates are skipped, so overlapping imports are safe.</p>
+        <form class="form" id="imp"><div class="two"><label>Into account${acctSelect(null, 'name="account_id"')}</label><label>Bank format<select name="profile"><option value="auto">Auto-detect</option><optgroup label="India">${profiles.filter(p => ['icici', 'hdfc', 'sbi', 'axis', 'kotak', 'india'].includes(p.name)).map(p => `<option value="${p.name}">${h(p.label)}</option>`).join('')}</optgroup><optgroup label="US & other">${profiles.filter(p => !['icici', 'hdfc', 'sbi', 'axis', 'kotak', 'india'].includes(p.name)).map(p => `<option value="${p.name}">${h(p.label)}</option>`).join('')}</optgroup></select></label></div>
+        <div class="dropzone" id="dz">${icon('upload', 22)}<div style="margin-top:6px">Drop a CSV or Excel statement, or <label style="display:inline;color:var(--accent);cursor:pointer;font-weight:600">browse<input type="file" name="file" accept=".csv,.txt,.xls,.xlsx,text/csv" hidden></label></div><div id="fname" class="small" style="margin-top:4px;color:var(--text)"></div></div>
         <div class="form-actions"><button class="btn" type="button" id="preview">Preview</button><button class="btn primary">Import</button></div></form><div id="imp-result" style="margin-top:12px"></div>`)}</div>`;
     if ($('#link-btn', el)) $('#link-btn', el).onclick = () => plaidLink();
     if ($('#sync-now', el)) $('#sync-now', el).onclick = syncPlaid;
@@ -1045,18 +1134,38 @@ const SETTINGS = {
     $$('[data-unlink]', el).forEach(b => b.onclick = async () => { if (await confirmModal('Unlink this bank? Accounts and history stay; syncing stops.', 'Unlink')) { await api(`/plaid/items/${b.dataset.unlink}`, { method: 'DELETE' }); render(); } });
     const imp = $('#imp', el), dz = $('#dz', el), fi = $('input[type=file]', imp);
     let file = null; const setFile = f => { file = f; $('#fname', el).textContent = f ? `${f.name} · ${(f.size / 1024).toFixed(0)} KB` : ''; };
-    fi.onchange = () => setFile(fi.files[0]);
+    fi.onchange = () => { csvText = null; mapping = null; setFile(fi.files[0]); };
     dz.ondragover = e => { e.preventDefault(); dz.classList.add('over'); }; dz.ondragleave = () => dz.classList.remove('over');
     dz.ondrop = e => { e.preventDefault(); dz.classList.remove('over'); setFile(e.dataTransfer.files[0]); };
+    let mapping = null, csvText = null;
     const go = async (dry) => {
-      if (!file) return toast('Choose a CSV first');
-      const fd = new FormData(); fd.append('file', file); fd.append('account_id', imp.account_id.value); fd.append('profile', imp.profile.value); fd.append('dry_run', dry);
+      if (!file) return toast('Choose a file first');
       try {
-        const r = await api('/import', { method: 'POST', body: fd });
+        const text = csvText ??= await fileToCsv(file);
+        const r = await api('/import-text', { method: 'POST', body: { account_id: +imp.account_id.value, profile: imp.profile.value, text, dry_run: dry, mapping } });
+        if (!r.imported && !r.duplicates) return showMapper(text, r.errors[0]);
         $('#imp-result', el).innerHTML = `<div class="callout ${r.errors.length ? 'warning' : 'good'}">${icon(r.errors.length ? 'alert' : 'check', 16, 2)}<div><b>${dry ? 'Preview' : 'Imported'}:</b> ${r.imported} new, ${r.duplicates} duplicates skipped${r.transfer_pairs ? `, ${r.transfer_pairs} transfers matched` : ''} · format <span class="code">${r.profile}</span>${r.errors.length ? `<br>${r.errors.length} rows couldn't be read: ${r.errors.slice(0, 3).map(h).join('; ')}` : ''}</div></div>
+          ${r.skipped ? `<div class="tiny muted" style="margin-top:6px">${plural(r.skipped, 'row')} without a date or amount skipped (headers, balances, summaries).</div>` : ''}
+          ${r.columns ? `<div class="tiny muted">Read columns: ${Object.entries(r.columns).map(([k, v]) => `${k} = “${h(v)}”`).join(', ')} · <a href="#" id="remap">change</a></div>` : ''}
           <div class="list" style="margin-top:10px">${r.transactions.slice(0, 12).map(t => `<div class="li"><div class="grow"><div class="main-t">${h(t.merchant)}</div><div class="sub-t">${t.date} · ${h(catName(t.category_id))}</div></div><span class="amt">${amt(t.amount)}</span></div>`).join('')}</div>`;
-        if (!dry) { toast(`Imported ${plural(r.imported, 'transaction')}`); setFile(null); fi.value = ''; }
+        const rm = $('#remap', el); if (rm) rm.onclick = (e) => { e.preventDefault(); showMapper(text); };
+        if (!dry) { toast(`Imported ${plural(r.imported, 'transaction')}`); setFile(null); fi.value = ''; csvText = null; mapping = null; }
       } catch (e) { toast(e.message); }
+    };
+    // When a file can't be read automatically, let the person point at the columns.
+    const showMapper = async (text, why) => {
+      const info = await api('/import/inspect', { method: 'POST', body: { text } });
+      const opts = (sel) => `<option value="">—</option>${info.headers.map(x => `<option ${x === sel ? 'selected' : ''}>${h(x)}</option>`).join('')}`;
+      const m = info.mapping || {};
+      modal(`${mhead('Which column is which?', why ? h(why) : 'Pick the columns from your file.')}
+        <div style="overflow-x:auto;margin-bottom:14px"><table class="plain small"><thead><tr>${info.headers.map(x => `<th>${h(x)}</th>`).join('')}</tr></thead><tbody>${info.sample.map(r => `<tr>${r.map(c => `<td class="nowrap">${h(c)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>
+        <form class="form"><div class="two"><label>Date<select name="date">${opts(m.date)}</select></label><label>Date format<select name="date_format"><option value="">Auto (day first)</option><option value="%d/%m/%Y">31/12/2026</option><option value="%d-%m-%Y">31-12-2026</option><option value="%d %b %Y">31 Dec 2026</option><option value="%d-%b-%Y">31-Dec-2026</option><option value="%d/%m/%y">31/12/26</option><option value="%m/%d/%Y">12/31/2026 (US)</option><option value="%Y-%m-%d">2026-12-31</option></select></label></div>
+        <label>Description<select name="description">${opts(m.description)}</select></label>
+        <div class="two"><label>Money out (debit)<select name="debit">${opts(m.debit)}</select></label><label>Money in (credit)<select name="credit">${opts(m.credit)}</select></label></div>
+        <div class="two"><label>Or one amount column<select name="amount">${opts(m.amount)}</select></label><label>Dr/Cr column (if any)<select name="dr_cr">${opts(m.dr_cr)}</select></label></div>
+        <label class="check"><input type="checkbox" name="negate"> Amounts are positive for spending (flip signs)</label>
+        <div class="form-actions"><button class="btn" type="button" data-close>Cancel</button><button class="btn primary">Use these columns</button></div></form>`,
+        (md, close) => $('form', md).onsubmit = (e) => { e.preventDefault(); const f = Object.fromEntries(new FormData(e.target)); f.negate = f.negate === 'on'; Object.keys(f).forEach(k => f[k] === '' && delete f[k]); mapping = f; close(); go(true); }, 'wide');
     };
     $('#preview', el).onclick = () => go(true); imp.onsubmit = e => { e.preventDefault(); go(false); };
   },
@@ -1094,8 +1203,23 @@ const SETTINGS = {
   },
   async data(el) {
     const tags = await api('/tags');
-    el.innerHTML = `<div class="grid g2">${card('Your data', `<p class="soft">Everything lives in one SQLite file on your computer. Nothing is sent anywhere except to Plaid (if connected) and the exchange-rate service when you press refresh.</p><a class="btn" href="/api/export/transactions.csv">${icon('download', 15)} Export all transactions</a>`)}
+    const st = BACKEND ? BACKEND.status() : null;
+    const vaultCard = !BACKEND ? card('Your data', `<p class="soft">Everything lives in one SQLite file on your computer. Nothing is sent anywhere except to Plaid (if connected) and the exchange-rate service when you press refresh.</p>`)
+      : st.mode === 'demo' ? card('Demo mode', `<p class="soft">You're exploring sample data. Nothing is saved; closing this tab discards it. Reload and sign in with Google to create your own encrypted vault.</p><button class="btn primary" onclick="location.reload()">Sign in</button>`)
+      : card('Your encrypted vault', `<dl class="kv" style="margin-bottom:14px"><dt>Google account</dt><dd>${h(st.user?.email || '')}</dd><dt>Stored in</dt><dd>Google Drive · hidden app folder</dd><dt>Encryption</dt><dd>AES-256-GCM · PBKDF2 600k</dd><dt>Last saved</dt><dd>${st.lastSaved ? st.lastSaved.toLocaleString() : '—'}</dd></dl>
+        <p class="small soft">Only someone with your passphrase or recovery key can read this file. Google, and the people who run Ledger, see only scrambled bytes.</p>
+        <div class="row wrap"><button class="btn" id="v-save">${icon('upload', 15)} Save now</button><button class="btn" id="v-backup">${icon('download', 15)} Download encrypted backup</button><button class="btn" id="v-pass">Change passphrase</button><button class="btn" id="v-lock">${icon('shield', 15)} Lock</button><button class="btn ghost" id="v-out">Sign out</button></div>
+        <details style="margin-top:16px"><summary><span class="chev">${icon('chevR', 14)}</span>Delete my data</summary><p class="small soft" style="margin-top:8px">Removes the vault from your Google Drive. Bank connections should be unlinked first so they stop counting toward the project's Plaid bill.</p><button class="btn danger" id="v-del">${icon('trash', 15)} Delete vault from Google Drive</button></details>`);
+    el.innerHTML = `<div class="grid g2">${vaultCard}${card('Export', `<p class="soft">Download your transactions as a spreadsheet anytime. It's your data.</p><button class="btn" data-export>${icon('download', 15)} Export all transactions (CSV)</button>`)}
       ${card('Tags', tags.length ? `<div class="row wrap" style="gap:6px">${tags.map(t => `<a class="chip ghost" href="#transactions?tag=${encodeURIComponent(t.name)}">${icon('tag', 11)} ${h(t.name)} <b>${t.count}</b></a>`).join('')}</div>` : '<p class="small muted">Tag transactions from their detail view, or in bulk from the Transactions list.</p>')}</div>`;
+    if (BACKEND && st.mode === 'drive') {
+      $('#v-save', el).onclick = async () => { await BACKEND.saveNow(); toast('Saved'); };
+      $('#v-backup', el).onclick = () => BACKEND.downloadBackup();
+      $('#v-pass', el).onclick = () => BACKEND.changePassphrase();
+      $('#v-lock', el).onclick = () => BACKEND.lock();
+      $('#v-out', el).onclick = () => BACKEND.signOut();
+      $('#v-del', el).onclick = async () => { if (await confirmModal('Permanently delete your Ledger vault from Google Drive? Download a backup first if you might want it later.', 'Delete forever')) BACKEND.deleteVault(); };
+    }
   },
 };
 

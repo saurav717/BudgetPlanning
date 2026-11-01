@@ -1,0 +1,23 @@
+{
+  "_readme": "Public record of the project's funding and costs, shown in the app under 'Funding & costs'. Admins update it by pull request so every change is reviewable in git history. Amounts are in 'currency'. Replace the zeros with real figures; link receipts or invoices where possible.",
+  "currency": "USD",
+  "updated": "2026-11-01",
+  "funding_links": [
+    { "label": "GitHub Sponsors", "url": "" },
+    { "label": "Open Collective", "url": "" }
+  ],
+  "admins": [],
+  "months": [
+    {
+      "month": "2026-11",
+      "income": [
+        { "source": "Donations", "amount": 0 }
+      ],
+      "expenses": [
+        { "item": "Plaid bank connections", "amount": 0, "note": "billed per connected bank account per month" },
+        { "item": "Cloudflare Workers", "amount": 0, "note": "free tier covers 100k requests/day" },
+        { "item": "Domain name", "amount": 0, "note": "" }
+      ]
+    }
+  ]
+}

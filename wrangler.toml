@@ -1,0 +1,30 @@
+# Cloudflare Worker: serves the web app (dist/) and the Plaid relay (/relay/*).
+# Deploy: python scripts/build_web.py && npx wrangler deploy   (or push to main; see .github/workflows/deploy.yml)
+name = "ledger"
+main = "relay/src/index.js"
+compatibility_date = "2025-06-01"
+workers_dev = true
+
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+run_worker_first = true   # so the worker can add security headers to every response
+
+# Create once with:  npx wrangler kv namespace create LEDGER_KV   and paste the id here
+# (the deploy workflow fills it in from the CLOUDFLARE_KV_ID repository variable).
+[[kv_namespaces]]
+binding = "LEDGER_KV"
+id = "00000000000000000000000000000000"
+
+[vars]
+PLAID_ENV = "sandbox"          # switch to "production" once Plaid approves the project
+MAX_ITEMS_PER_USER = "3"       # bank connections per person; this is what bounds the Plaid bill
+ALLOWED_EMAILS = ""            # comma-separated invite list; empty = anyone with a Google account
+ADMIN_EMAILS = ""              # who can read /relay/admin/usage
+GOOGLE_CLIENT_ID = ""          # same OAuth client ID the web app is built with
+APP_NAME = "Ledger"
+
+# Secrets (never in this file):
+#   npx wrangler secret put PLAID_CLIENT_ID
+#   npx wrangler secret put PLAID_SECRET
+#   npx wrangler secret put USER_SALT        # any long random string

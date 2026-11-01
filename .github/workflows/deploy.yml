@@ -1,0 +1,57 @@
+name: Deploy to Cloudflare
+
+# Builds the static site and deploys it together with the Plaid relay as one Cloudflare Worker.
+# Runs on pushes to main, or by hand from the Actions tab. Only repository admins can see or change
+# the secrets below, which is how the project's Plaid and Cloudflare credentials stay with the admins.
+#
+# Repository secrets:   CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID, PLAID_CLIENT_ID, PLAID_SECRET, USER_SALT
+# Repository variables: GOOGLE_CLIENT_ID, CLOUDFLARE_KV_ID, PLAID_ENV, MAX_ITEMS_PER_USER, ADMIN_EMAILS, ALLOWED_EMAILS
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production   # add required reviewers to this environment to gate deploys on an admin's approval
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev]" && pytest -q
+      - name: Build the static site
+        run: python scripts/build_web.py
+        env:
+          LEDGER_GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID }}
+      - name: Point wrangler.toml at the KV namespace
+        run: sed -i "s/00000000000000000000000000000000/${{ vars.CLOUDFLARE_KV_ID }}/" wrangler.toml
+      - uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          wranglerVersion: "3.114.0"
+          secrets: |
+            PLAID_CLIENT_ID
+            PLAID_SECRET
+            USER_SALT
+          command: >-
+            deploy
+            --var PLAID_ENV:${{ vars.PLAID_ENV || 'sandbox' }}
+            --var GOOGLE_CLIENT_ID:${{ vars.GOOGLE_CLIENT_ID }}
+            --var MAX_ITEMS_PER_USER:${{ vars.MAX_ITEMS_PER_USER || '3' }}
+            --var ADMIN_EMAILS:${{ vars.ADMIN_EMAILS }}
+            --var ALLOWED_EMAILS:${{ vars.ALLOWED_EMAILS }}
+        env:
+          PLAID_CLIENT_ID: ${{ secrets.PLAID_CLIENT_ID }}
+          PLAID_SECRET: ${{ secrets.PLAID_SECRET }}
+          USER_SALT: ${{ secrets.USER_SALT }}

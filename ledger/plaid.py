@@ -10,8 +10,6 @@ import os
 import sqlite3
 from datetime import date
 
-import httpx
-
 from .categorize import Categorizer, clean_merchant
 
 ENV_HOSTS = {"sandbox": "https://sandbox.plaid.com", "production": "https://production.plaid.com"}
@@ -50,22 +48,32 @@ class PlaidNotConfigured(RuntimeError):
 
 class PlaidClient:
     def __init__(self, client_id: str | None = None, secret: str | None = None, env: str | None = None,
-                 http: httpx.Client | None = None):
+                 http=None, relay_url: str | None = None):
         self.client_id = client_id or os.environ.get("PLAID_CLIENT_ID", "")
         self.secret = secret or os.environ.get("PLAID_SECRET", "")
         self.env = (env or os.environ.get("PLAID_ENV", "sandbox")).lower()
         self.base = ENV_HOSTS.get(self.env, ENV_HOSTS["sandbox"])
-        self.http = http or httpx.Client(timeout=60)
+        # Relay mode: the browser build has no secret. A Cloudflare Worker adds client_id/secret
+        # server-side and forwards the call to Plaid (see relay/src/index.js).
+        self.relay_url = (relay_url if relay_url is not None else os.environ.get("LEDGER_PLAID_RELAY", "")).rstrip("/")
+        if http is None:
+            from .webhttp import default_client
+            http = default_client(60)
+        self.http = http
 
     @property
     def configured(self) -> bool:
-        return bool(self.client_id and self.secret)
+        return bool(self.relay_url) or bool(self.client_id and self.secret)
 
     def _post(self, path: str, **body) -> dict:
         if not self.configured:
-            raise PlaidNotConfigured("Set PLAID_CLIENT_ID and PLAID_SECRET to use Plaid.")
-        body.update(client_id=self.client_id, secret=self.secret)
-        r = self.http.post(f"{self.base}{path}", json=body)
+            raise PlaidNotConfigured("Set PLAID_CLIENT_ID and PLAID_SECRET (or a relay URL) to use Plaid.")
+        if self.relay_url:
+            token = os.environ.get("LEDGER_RELAY_TOKEN", "")
+            r = self.http.post(f"{self.relay_url}/plaid{path}", json=body, headers={"Authorization": f"Bearer {token}"})
+        else:
+            body.update(client_id=self.client_id, secret=self.secret)
+            r = self.http.post(f"{self.base}{path}", json=body)
         if r.status_code >= 400:
             try:
                 err = r.json()

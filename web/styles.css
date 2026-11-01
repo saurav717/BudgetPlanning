@@ -339,3 +339,10 @@ details[open] > summary .chev { transform: rotate(90deg); } summary .chev { tran
 .cust-row .name { flex: 1; font-weight: 550; }
 
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+
+/* save status (browser mode) */
+.save-status { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-2); padding: 0 4px; min-height: 26px; }
+.save-status .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--muted); }
+.save-status .dot.ok { background: var(--good); } .save-status .dot.busy { background: var(--warning); animation: pulse 1s ease-in-out infinite; } .save-status .dot.bad, .save-status .dot.warn { background: var(--serious); }
+.save-status .dot.warn { background: var(--warning); }
+@keyframes pulse { 50% { opacity: .35; } }

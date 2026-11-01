@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev]"
+      - run: pytest -q
+
+  javascript:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Relay and encryption tests
+        run: node --test tests/js/*.test.*
+
+  e2e:
+    # Full browser test: Google sign-in and Drive are mocked; the real relay code runs with a mocked Plaid.
+    runs-on: ubuntu-latest
+    needs: [python, javascript]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Build the static site
+        run: python scripts/build_web.py
+        env:
+          LEDGER_GOOGLE_CLIENT_ID: test-client
+      - name: Install Playwright
+        run: npm install --no-save playwright@1.49.1 && npx playwright install --with-deps chromium
+      - name: Run
+        run: |
+          node tests/e2e/host.mjs 8799 &
+          sleep 1
+          node tests/e2e/browser.e2e.cjs

@@ -266,6 +266,45 @@ RULES_V2 = [
     ("uscis", "Fees & Charges", "USCIS"), ("lic premium", "Insurance", "LIC"),
 ]
 
+# Indian merchants and narration patterns (rules version 3)
+RULES_V3 = [
+    ("blinkit", "Groceries", "Blinkit"), ("zepto", "Groceries", "Zepto"), ("dmart", "Groceries", "DMart"), ("avenue supermarts", "Groceries", "DMart"),
+    ("reliance fresh", "Groceries", "Reliance Fresh"), ("reliance smart", "Groceries", "Reliance Smart"), ("jiomart", "Groceries", "JioMart"),
+    ("more retail", "Groceries", "More"), ("instamart", "Groceries", "Swiggy Instamart"), ("licious", "Groceries", "Licious"),
+    ("dunzo", "Groceries", "Dunzo"), ("eatsure", "Restaurants & Bars", "EatSure"), ("dominos", "Restaurants & Bars", "Domino's"),
+    ("jubilant foodworks", "Restaurants & Bars", "Domino's"), ("chaayos", "Coffee Shops", "Chaayos"), ("third wave", "Coffee Shops", "Third Wave Coffee"),
+    ("ccd ", "Coffee Shops", "Cafe Coffee Day"), ("cafe coffee day", "Coffee Shops", "Cafe Coffee Day"),
+    ("flipkart", "Shopping", "Flipkart"), ("myntra", "Shopping", "Myntra"), ("ajio", "Shopping", "AJIO"), ("meesho", "Shopping", "Meesho"),
+    ("nykaa", "Personal Care", "Nykaa"), ("tata cliq", "Shopping", "Tata CLiQ"), ("croma", "Shopping", "Croma"), ("decathlon", "Shopping", "Decathlon"),
+    ("olacabs", "Public Transit & Rideshare", "Ola"), ("ola cabs", "Public Transit & Rideshare", "Ola"), ("ani technologies", "Public Transit & Rideshare", "Ola"),
+    ("rapido", "Public Transit & Rideshare", "Rapido"), ("roppen", "Public Transit & Rideshare", "Rapido"), ("namma yatri", "Public Transit & Rideshare", "Namma Yatri"),
+    ("metro rail", "Public Transit & Rideshare", "Metro"), ("fastag", "Parking & Tolls", "FASTag"), ("indian oil", "Gas & Fuel", "Indian Oil"),
+    ("iocl", "Gas & Fuel", "Indian Oil"), ("hpcl", "Gas & Fuel", "HP Petrol"), ("bpcl", "Gas & Fuel", "Bharat Petroleum"),
+    ("irctc", "Travel", "IRCTC"), ("makemytrip", "Travel", "MakeMyTrip"), ("goibibo", "Travel", "Goibibo"), ("cleartrip", "Travel", "Cleartrip"),
+    ("indigo", "Travel", "IndiGo"), ("interglobe", "Travel", "IndiGo"), ("vistara", "Travel", "Vistara"), ("akasa", "Travel", "Akasa Air"),
+    ("redbus", "Travel", "redBus"), ("oyo", "Travel", "OYO"),
+    ("hotstar", "Subscriptions", "JioHotstar"), ("sonyliv", "Subscriptions", "SonyLIV"), ("zee5", "Subscriptions", "ZEE5"),
+    ("bookmyshow", "Entertainment", "BookMyShow"), ("bigtree", "Entertainment", "BookMyShow"), ("pvr", "Entertainment", "PVR INOX"),
+    ("bescom", "Utilities", "BESCOM"), ("msedcl", "Utilities", "MSEDCL"), ("tata power", "Utilities", "Tata Power"), ("adani electricity", "Utilities", "Adani Electricity"),
+    ("tneb", "Utilities", "TNEB"), ("tsspdcl", "Utilities", "TSSPDCL"), ("bses", "Utilities", "BSES"), ("electricity", "Utilities", ""),
+    ("indane", "Utilities", "Indane Gas"), ("bharatgas", "Utilities", "Bharat Gas"), ("mahanagar gas", "Utilities", "Mahanagar Gas"),
+    ("act fibernet", "Internet & Phone", "ACT Fibernet"), ("vodafone idea", "Internet & Phone", "Vi"), ("bsnl", "Internet & Phone", "BSNL"),
+    ("apollo pharmacy", "Pharmacy", "Apollo Pharmacy"), ("pharmeasy", "Pharmacy", "PharmEasy"), ("netmeds", "Pharmacy", "Netmeds"), ("1mg", "Pharmacy", "Tata 1mg"),
+    ("practo", "Medical", "Practo"), ("cult.fit", "Fitness", "cult.fit"), ("curefit", "Fitness", "cult.fit"),
+    ("zerodha", "Investment Contribution", "Zerodha"), ("groww", "Investment Contribution", "Groww"), ("upstox", "Investment Contribution", "Upstox"),
+    ("indian clearing corp", "Investment Contribution", "Mutual fund SIP"), ("nse clearing", "Investment Contribution", "NSE"), ("bse ltd", "Investment Contribution", "BSE"),
+    ("mutual fund", "Investment Contribution", ""), (" sip ", "Investment Contribution", "SIP"), ("ppf", "Investment Contribution", "PPF"), ("nps trust", "Investment Contribution", "NPS"),
+    ("cred club", "Credit Card Payment", "CRED"), ("dreamplug", "Credit Card Payment", "CRED"), ("cc payment", "Credit Card Payment", "Card payment"),
+    ("credit card payment", "Credit Card Payment", "Card payment"), ("billdesk", "Utilities", "BillDesk"),
+    ("int.pd", "Interest & Dividends", "Interest"), ("int pd", "Interest & Dividends", "Interest"), ("credit interest", "Interest & Dividends", "Interest"),
+    ("sb interest", "Interest & Dividends", "Interest"), ("int.coll", "Interest & Dividends", "Interest"), ("fd interest", "Interest & Dividends", "FD interest"),
+    ("tds", "Taxes", "TDS"), ("gst", "Fees & Charges", ""), ("sms charges", "Fees & Charges", "SMS charges"), ("min bal", "Fees & Charges", "Minimum balance charge"),
+    ("dc annual", "Fees & Charges", "Debit card fee"), ("salary", "Paycheck", ""), ("sal ", "Paycheck", ""),
+    ("atw-", "Transfer", "ATM withdrawal"), ("nwd-", "Transfer", "ATM withdrawal"), ("atm wdl", "Transfer", "ATM withdrawal"), ("cash wdl", "Transfer", "ATM withdrawal"),
+]
+# Very broad patterns: only used when nothing more specific matches.
+GENERIC_LAST = ("transfer", "neft cr", "imps", "zelle", "venmo", "paypal")
+
 ACCOUNT_COLUMNS = {"credit_limit": "REAL", "tax_type": "TEXT DEFAULT ''"}
 
 TX_VIEW = """
@@ -329,6 +368,15 @@ def migrate(conn: sqlite3.Connection) -> None:
         conn.executemany("INSERT INTO rules (pattern, is_regex, category_id, rename_to, priority) VALUES (?, 0, ?, ?, ?)",
                          [(p, cats[c], r, 500 + i) for i, (p, c, r) in enumerate(RULES_V2) if p not in have])
         conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('rules_version', '2')")
+        version = 2
+    if version < 3:
+        cats = {r["name"]: r["id"] for r in conn.execute("SELECT id, name FROM categories")}
+        have = {r[0] for r in conn.execute("SELECT pattern FROM rules")}
+        conn.executemany("INSERT INTO rules (pattern, is_regex, category_id, rename_to, priority) VALUES (?, 0, ?, ?, ?)",
+                         [(p, cats[c], r, 450 + i) for i, (p, c, r) in enumerate(RULES_V3) if p not in have])
+        # catch-alls go last so 'NEFT CR-...-SALARY' is a paycheck and 'ZELLE ... RENT' is rent
+        conn.executemany("UPDATE rules SET priority = 5000 WHERE pattern = ? AND priority > 1", [(p,) for p in GENERIC_LAST])
+        conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('rules_version', '3')")
     conn.executescript(TX_VIEW)
     conn.commit()
 
