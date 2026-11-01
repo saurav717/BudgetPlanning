@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ledger</title>
+<link rel="stylesheet" href="/static/styles.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"></script>
+</head>
+<body>
+<aside class="sidebar">
+  <div class="brand"><span class="logo">L</span> Ledger</div>
+  <nav>
+    <a href="#dashboard" data-view="dashboard">Dashboard</a>
+    <a href="#accounts" data-view="accounts">Accounts</a>
+    <a href="#transactions" data-view="transactions">Transactions</a>
+    <a href="#budgets" data-view="budgets">Budget</a>
+    <a href="#recurring" data-view="recurring">Recurring</a>
+    <a href="#goals" data-view="goals">Goals</a>
+    <a href="#reports" data-view="reports">Reports</a>
+    <a href="#investments" data-view="investments">Investments</a>
+    <a href="#insights" data-view="insights">Insights</a>
+    <a href="#settings" data-view="settings">Settings</a>
+  </nav>
+  <div class="sidebar-foot">
+    <button class="btn small" id="sync-btn" title="Sync Plaid accounts">Sync</button>
+    <span id="sync-status" class="muted"></span>
+  </div>
+</aside>
+<main id="main"><div class="loading">Loading…</div></main>
+<div id="modal-root"></div>
+<div id="toast"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>
