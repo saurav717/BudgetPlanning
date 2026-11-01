@@ -20,24 +20,29 @@ def seed(conn: sqlite3.Connection, months: int = 14, seed: int = 7) -> dict:
     today = date.today()
     start = (today.replace(day=1) - timedelta(days=30 * months)).replace(day=1)
 
-    def acct(name, type_, inst, bal):
-        cur = conn.execute("INSERT INTO accounts (name, type, institution) VALUES (?,?,?)", (name, type_, inst))
+    def acct(name, type_, inst, bal, currency="USD", limit=None, tax=""):
+        cur = conn.execute("INSERT INTO accounts (name, type, institution, currency, credit_limit, tax_type) VALUES (?,?,?,?,?,?)",
+                           (name, type_, inst, currency, limit, tax))
         return cur.lastrowid, bal
 
     checking, chk_bal = acct("Everyday Checking ••4821", "checking", "Chase", 6200.0)
     savings, sav_bal = acct("High-Yield Savings ••0093", "savings", "Marcus", 18500.0)
-    card1, c1_bal = acct("Sapphire Preferred ••7710", "credit", "Chase", -1840.0)
-    card2, c2_bal = acct("Blue Cash ••3002", "credit", "American Express", -412.0)
+    card1, c1_bal = acct("Sapphire Preferred ••7710", "credit", "Chase", -1840.0, limit=15000)
+    card2, c2_bal = acct("Blue Cash ••3002", "credit", "American Express", -412.0, limit=8000)
     broker, br_bal = acct("Brokerage ••5519", "investment", "Vanguard", 42300.0)
-    k401, k_bal = acct("401(k)", "investment", "Fidelity", 87900.0)
+    k401, k_bal = acct("401(k)", "investment", "Fidelity", 87900.0, tax="401k")
+    hsa, hsa_bal = acct("HSA", "investment", "Fidelity", 6400.0, tax="hsa")
     car, car_bal = acct("Auto Loan", "loan", "Toyota Financial", -11250.0)
+    nre, nre_bal = acct("NRE Savings ••2210", "savings", "ICICI Bank", 640000.0, currency="INR")
 
-    tx = {checking: [], card1: [], card2: [], savings: [], broker: [], car: []}
+    tx = {checking: [], card1: [], card2: [], savings: [], broker: [], car: [], k401: [], hsa: [], nre: []}
 
     # --- income: biweekly paycheck + yearly bonus ---
     d = start + timedelta(days=4)
     while d <= today:
         tx[checking].append((d, 3185.42, "ACME CORP PAYROLL DIRECT DEP"))
+        tx[k401].append((d, 850.00, "EMPLOYEE 401K CONTRIBUTION"))
+        tx[k401].append((d, 255.00, "EMPLOYER MATCH 401K"))
         d += timedelta(days=14)
     tx[checking].append((date(today.year, 3, 15) if today.month >= 3 else date(today.year - 1, 3, 15), 6500.00, "ACME CORP BONUS DIRECT DEP"))
 
@@ -63,6 +68,14 @@ def seed(conn: sqlite3.Connection, months: int = 14, seed: int = 7) -> dict:
         tx[savings].append((m.replace(day=2), 1000.00, "ONLINE TRANSFER FROM CHECKING ••4821"))
         tx[savings].append((m.replace(day=28), round(rng.uniform(55, 72), 2), "INTEREST PAYMENT"))
         tx[checking].append((m.replace(day=18), -500.00, "VANGUARD BUY INVESTMENT"))
+        tx[hsa].append((m.replace(day=15), 300.00, "PAYROLL HSA CONTRIBUTION"))
+        # money home: a monthly Wise transfer to your own NRE account, plus support for family every other month
+        wise = round(rng.uniform(780, 820), 2)
+        tx[checking].append((m.replace(day=4), -wise, "WISE INC TRANSFER TO INR"))
+        tx[nre].append((m.replace(day=5), round(wise * 88.2, 2), "INWARD REMITTANCE WISE"))
+        if m.month % 2 == 0:
+            tx[checking].append((m.replace(day=10), -300.00, "REMITLY* FAMILY SUPPORT"))
+        tx[nre].append((m.replace(day=28), round(rng.uniform(1800, 2300), 2), "SB INTEREST CREDIT"))
         tx[broker].append((m.replace(day=18), 500.00, "ELECTRONIC BANK TRANSFER IN"))
         # credit card payments: pay off previous month on the 25th
         tx[checking].append((m.replace(day=25), -round(rng.uniform(1300, 2100), 2), "CHASE CREDIT CRD AUTOPAY"))
@@ -126,8 +139,9 @@ def seed(conn: sqlite3.Connection, months: int = 14, seed: int = 7) -> dict:
     pairs = match_transfers(conn)
 
     # --- balance snapshots: walk backwards from today's balance using the transactions ---
-    balances = {checking: chk_bal, savings: sav_bal, card1: c1_bal, card2: c2_bal, broker: br_bal, k401: k_bal, car: car_bal}
-    growth = {broker: 0.0085, k401: 0.008}
+    balances = {checking: chk_bal, savings: sav_bal, card1: c1_bal, card2: c2_bal, broker: br_bal, k401: k_bal, car: car_bal,
+                hsa: hsa_bal, nre: nre_bal}
+    growth = {broker: 0.0085, k401: 0.008, hsa: 0.006}
     m_end = today
     for acct_id, bal in balances.items():
         b = bal
@@ -140,8 +154,6 @@ def seed(conn: sqlite3.Connection, months: int = 14, seed: int = 7) -> dict:
             b = b - flow
             if acct_id in growth:
                 b = b / (1 + growth[acct_id] + rng.uniform(-0.02, 0.02))
-            if acct_id == k401:
-                b -= 1150  # employer+employee contributions not visible as transactions
             cur = prev_end
 
     # --- budgets ---
@@ -166,4 +178,7 @@ def seed(conn: sqlite3.Connection, months: int = 14, seed: int = 7) -> dict:
     # tags on a couple of rows
     conn.execute("INSERT OR IGNORE INTO tags (name) VALUES ('reimbursable')")
     conn.commit()
-    return {"transactions": total, "transfer_pairs": pairs, "accounts": 7}
+    conn.execute("INSERT OR REPLACE INTO budgets (category_id, month, amount) VALUES (?, NULL, ?)", (cats["Family Support"], 150))
+    conn.execute("UPDATE categories SET budget_type='fixed' WHERE name='Family Support'")
+    conn.commit()
+    return {"transactions": total, "transfer_pairs": pairs, "accounts": 10}

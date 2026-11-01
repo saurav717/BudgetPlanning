@@ -7,9 +7,41 @@ SQLite file on your machine.
 
 ```
 pip install -e .          # or: pip install -r requirements.txt
-ledger demo               # seed 14 months of realistic sample data (optional)
+ledger demo               # seed 14 months of realistic sample data, incl. an INR account and transfers home (optional)
 ledger serve              # open http://127.0.0.1:8765
 ```
+
+## Made around you
+
+The first time you open Ledger it asks a few questions: your name, your main currency and a second one you care
+about (say, INR), how often you're paid, the cash cushion you never want to dip below, your emergency-fund and
+savings-rate targets, and what you're working on (emergency fund, paying off debt, spending less, maxing out
+retirement accounts, sending money home, saving for something big, growing net worth). Everything below adapts to
+those answers, and you can change them any time in **Settings → Profile**.
+
+- **Daily briefing.** The dashboard opens with a few plain-English lines: how this month's spending compares with
+  the same point last month, when your next paycheck lands and which bills are due first, whether cash will dip
+  below your cushion, how much you've sent home, and how your top goal is doing.
+- **A dashboard arranged by your priorities.** Sixteen widgets; the ones that match your priorities come first and
+  irrelevant ones are hidden. **Customize** lets you show, hide and reorder them, and rows always pack edge to edge.
+- **Cash forecast.** Projects spendable cash (checking and cash minus card balances) day by day for 30, 60 or 90
+  days using detected paychecks, bills, scheduled transfers and your typical everyday spending, and warns before you
+  cross your cushion.
+- **Money checkup.** A 0–100 score built from emergency-fund months, savings rate, credit utilisation, debt
+  payments vs. income, budget discipline and retirement pace, each with a target, a status and specific advice.
+- **Money home.** Tracks transfers abroad (Wise, Remitly, Western Union, Xoom, Remit2India and others), split
+  between family support (counted as spending) and transfers to your own accounts (kept in net worth), shown in both
+  currencies with an editable exchange rate.
+- **Multi-currency.** Accounts can be held in any currency. Totals, net worth and reports convert to your main
+  currency; INR amounts use Indian digit grouping (₹8,37,026). Rates refresh from ECB reference rates or can be set by hand.
+- **Retirement contribution limits.** Mark accounts as 401(k), Roth 401(k), 403(b), IRA, Roth IRA or HSA to see
+  how much room is left this year, whether you're on pace, and how much per paycheck maxes it out. Employer match
+  doesn't count toward your limit. 2026 limits are built in and editable.
+- **Credit utilisation** per card and overall, with the 10% and 30% thresholds that matter for your credit score.
+- **Spending pace and daily heatmap.** Cumulative spending this month vs. last month vs. your budget, and a
+  calendar heatmap of daily spending.
+
+The interface has light and dark themes (follows your system, with a toggle), works on a phone, and needs no build step.
 
 ## What it does
 
@@ -105,6 +137,8 @@ ledger/
   transfers.py   cross-account transfer matching
   recurring.py   recurring detection
   reports.py     net worth, cash flow, spending, budgets, safe-to-spend
+  personal.py    profile, dashboard layout, forecast, checkup, pace, remittances, retirement, briefing
+  fx.py          exchange rates and currency formatting
   insights.py    advisor rules
   plaid.py       Plaid REST client + sync
   api.py         FastAPI app

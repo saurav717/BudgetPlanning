@@ -3,34 +3,41 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#f6f5f2">
 <title>Ledger</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/styles.css">
+<script>
+  // apply the saved theme before first paint to avoid a flash
+  try { const t = localStorage.getItem('ledger-theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch (e) {}
+</script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
-<script src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"></script>
+<script src="https://cdn.plaid.com/link/v2/stable/link-initialize.js" async></script>
 </head>
 <body>
-<aside class="sidebar">
-  <div class="brand"><span class="logo">L</span> Ledger</div>
-  <nav>
-    <a href="#dashboard" data-view="dashboard">Dashboard</a>
-    <a href="#accounts" data-view="accounts">Accounts</a>
-    <a href="#transactions" data-view="transactions">Transactions</a>
-    <a href="#budgets" data-view="budgets">Budget</a>
-    <a href="#recurring" data-view="recurring">Recurring</a>
-    <a href="#goals" data-view="goals">Goals</a>
-    <a href="#reports" data-view="reports">Reports</a>
-    <a href="#investments" data-view="investments">Investments</a>
-    <a href="#insights" data-view="insights">Insights</a>
-    <a href="#settings" data-view="settings">Settings</a>
-  </nav>
-  <div class="sidebar-foot">
-    <button class="btn small" id="sync-btn" title="Sync Plaid accounts">Sync</button>
-    <span id="sync-status" class="muted"></span>
-  </div>
-</aside>
-<main id="main"><div class="loading">Loading…</div></main>
+<div class="app">
+  <aside class="sidebar" id="sidebar">
+    <a class="brand" href="#dashboard"><span class="logo"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4 18 9.5 12.5l3.5 3.5L20 8"/><path d="M15 8h5v5"/></svg></span><span>Ledger</span></a>
+    <nav id="nav"></nav>
+    <div class="side-foot">
+      <button class="sync" id="sync-btn" title="Sync connected banks"><span data-icon="refresh"></span><span id="sync-label">Sync banks</span></button>
+      <div class="me">
+        <a class="me-link" href="#settings?tab=profile"><span class="avatar" id="avatar">?</span><span class="me-name" id="me-name">Set up profile</span></a>
+        <button class="icon-btn" id="theme-btn" title="Toggle theme"><span data-icon="moon"></span></button>
+      </div>
+    </div>
+  </aside>
+  <div class="scrim" id="scrim"></div>
+  <main class="main">
+    <header class="topbar"><button class="icon-btn" id="menu-btn" aria-label="Menu"><span data-icon="menu"></span></button><span class="topbar-title" id="topbar-title">Ledger</span></header>
+    <div id="view"><div class="loading"><span class="spinner"></span></div></div>
+  </main>
+</div>
 <div id="modal-root"></div>
-<div id="toast"></div>
+<div id="toast" role="status"></div>
+<div id="tip" role="tooltip"></div>
 <script src="/static/app.js"></script>
 </body>
 </html>

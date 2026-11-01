@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import db, importer, plaid, recurring, reports, insights
+from . import db, fx, importer, personal, plaid, recurring, reports, insights
 from .categorize import Categorizer, clean_merchant
 from .transfers import match_transfers
 
@@ -44,27 +44,133 @@ def rows(cur) -> list[dict]:
 
 @app.get("/api/overview")
 def overview(conn=Depends(get_conn)):
+    profile = personal.get_profile(conn)
     rec = recurring.detect_recurring(conn)
     month = reports.this_month()
     bs = reports.budget_status(conn, month)
-    cf = reports.cashflow(conn, 6)
     start, end = reports.month_bounds(month)
+    pace = personal.pace(conn, month)
+    fc = personal.forecast(conn, 60, profile)
+    goals = [personal.goal_progress(conn, dict(g)) for g in conn.execute("SELECT * FROM goals WHERE archived=0 ORDER BY target_date, id")]
+    layout = personal.get_layout(conn, profile)
+    visible = {w["id"] for w in layout if w["visible"]}
     return {
         "today": date.today().isoformat(),
+        "profile": profile,
+        "layout": layout,
+        "briefing": personal.briefing(conn, profile, pace, fc),
         "net_worth": reports.net_worth(conn),
         "net_worth_history": reports.net_worth_history(conn, 12),
-        "cashflow": cf,
+        "cashflow": reports.cashflow(conn, 6),
         "budget_summary": bs["summary"],
-        "budget_rows": [r for r in bs["rows"] if r["kind"] == "expense" and r["has_budget"]][:8],
+        "budget_rows": sorted([r for r in bs["rows"] if r["kind"] == "expense" and r["has_budget"]],
+                              key=lambda r: -(r["pct"] or 0))[:7],
         "spending_by_group": reports.spending_by_group(conn, start, end),
         "safe_to_spend": reports.safe_to_spend(conn, [r for r in rec if r["days_until"] <= 45]),
         "upcoming": [r for r in rec if -3 <= r["days_until"] <= 30],
-        "insights": insights.generate(conn)[:6],
+        "insights": insights.generate(conn)[:5],
         "accounts": [a for a in reports.account_balances(conn) if not a["archived"]],
         "recent": rows(conn.execute(
-            "SELECT t.*, c.name AS category, a.name AS account FROM transactions t LEFT JOIN categories c ON c.id=t.category_id "
-            "JOIN accounts a ON a.id=t.account_id WHERE t.hidden=0 ORDER BY t.date DESC, t.id DESC LIMIT 8")),
+            "SELECT t.*, c.name AS category, c.\"group\" AS category_group, a.name AS account FROM transactions t LEFT JOIN categories c ON c.id=t.category_id "
+            "JOIN accounts a ON a.id=t.account_id WHERE t.hidden=0 ORDER BY t.date DESC, t.id DESC LIMIT 7")),
+        "pace": pace,
+        "forecast": fc,
+        "checkup": personal.checkup(conn, profile),
+        "daily": personal.daily(conn, 1),
+        "goals": goals,
+        "utilization": personal.utilization(conn) if "utilization" in visible else None,
+        "remittances": personal.remittances(conn, profile=profile) if "remittances" in visible else None,
+        "retirement": personal.retirement(conn, profile=profile) if "retirement" in visible else None,
+        "fx": {"home": fx.home_currency(conn), "second": profile.get("second_currency") or "",
+               "rate": fx.convert(conn, 1.0, fx.home_currency(conn), profile["second_currency"]) if profile.get("second_currency") else None},
     }
+
+
+# ---------------- profile / personalisation ----------------
+
+@app.get("/api/profile")
+def get_profile(conn=Depends(get_conn)):
+    return {**personal.get_profile(conn), "priority_options": personal.PRIORITIES}
+
+
+@app.put("/api/profile")
+def put_profile(body: dict, conn=Depends(get_conn)):
+    p = personal.save_profile(conn, body)
+    if body.get("reset_layout"):
+        personal.save_layout(conn, None)
+    return p
+
+
+@app.get("/api/layout")
+def get_layout(conn=Depends(get_conn)):
+    return {"layout": personal.get_layout(conn), "recommended": personal.recommended_layout(conn, personal.get_profile(conn))}
+
+
+@app.put("/api/layout")
+def put_layout(body: dict, conn=Depends(get_conn)):
+    return {"layout": personal.save_layout(conn, body.get("layout"))}
+
+
+@app.get("/api/checkup")
+def get_checkup(conn=Depends(get_conn)):
+    return personal.checkup(conn)
+
+
+@app.get("/api/forecast")
+def get_forecast(days: int = Query(60, ge=7, le=180), conn=Depends(get_conn)):
+    return personal.forecast(conn, days)
+
+
+@app.get("/api/reports/pace")
+def r_pace(month: Optional[str] = None, conn=Depends(get_conn)):
+    return personal.pace(conn, month)
+
+
+@app.get("/api/reports/daily")
+def r_daily(months: int = Query(3, ge=1, le=12), conn=Depends(get_conn)):
+    return personal.daily(conn, months)
+
+
+@app.get("/api/remittances")
+def get_remittances(year: Optional[int] = None, conn=Depends(get_conn)):
+    return personal.remittances(conn, year)
+
+
+@app.get("/api/retirement")
+def get_retirement(year: Optional[int] = None, conn=Depends(get_conn)):
+    return personal.retirement(conn, year)
+
+
+@app.put("/api/retirement/limits")
+def put_limits(body: dict, conn=Depends(get_conn)):
+    db.set_setting(conn, "contribution_limits", {k: float(v) for k, v in body.items() if k in personal.DEFAULT_LIMITS})
+    return personal.retirement(conn)
+
+
+@app.get("/api/utilization")
+def get_utilization(conn=Depends(get_conn)):
+    return personal.utilization(conn)
+
+
+@app.get("/api/fx")
+def get_fx(conn=Depends(get_conn)):
+    return {"home": fx.home_currency(conn), "rates": list(fx.rates(conn).values()), "symbols": fx.SYMBOLS}
+
+
+@app.put("/api/fx/{currency}")
+def put_fx(currency: str, body: dict, conn=Depends(get_conn)):
+    """Set a rate. Pass either per_usd, or per_home (units of this currency per 1 unit of home currency)."""
+    if "per_home" in body:
+        home_per_usd = fx.rates(conn).get(fx.home_currency(conn), {"per_usd": 1.0})["per_usd"]
+        fx.set_rate(conn, currency, float(body["per_home"]) * home_per_usd)
+    else:
+        fx.set_rate(conn, currency, float(body["per_usd"]))
+    return get_fx(conn)
+
+
+@app.post("/api/fx/refresh")
+def refresh_fx(conn=Depends(get_conn)):
+    return fx.refresh(conn)
 
 
 # ---------------- accounts ----------------
@@ -77,6 +183,8 @@ class AccountIn(BaseModel):
     import_profile: str = "generic"
     balance: Optional[float] = None
     include_in_net_worth: bool = True
+    credit_limit: Optional[float] = None
+    tax_type: str = ""
 
 
 class AccountPatch(BaseModel):
@@ -86,6 +194,9 @@ class AccountPatch(BaseModel):
     import_profile: Optional[str] = None
     archived: Optional[bool] = None
     include_in_net_worth: Optional[bool] = None
+    currency: Optional[str] = None
+    credit_limit: Optional[float] = None
+    tax_type: Optional[str] = None
 
 
 class BalanceIn(BaseModel):
@@ -106,8 +217,8 @@ def list_accounts(conn=Depends(get_conn)):
 @app.post("/api/accounts", status_code=201)
 def create_account(a: AccountIn, conn=Depends(get_conn)):
     try:
-        cur = conn.execute("INSERT INTO accounts (name, type, institution, currency, import_profile, include_in_net_worth) VALUES (?,?,?,?,?,?)",
-                           (a.name, a.type, a.institution, a.currency, a.import_profile, int(a.include_in_net_worth)))
+        cur = conn.execute("INSERT INTO accounts (name, type, institution, currency, import_profile, include_in_net_worth, credit_limit, tax_type) VALUES (?,?,?,?,?,?,?,?)",
+                           (a.name, a.type, a.institution, a.currency.upper(), a.import_profile, int(a.include_in_net_worth), a.credit_limit, a.tax_type))
     except sqlite3.IntegrityError as e:
         raise HTTPException(400, f"Could not create account: {e}")
     if a.balance is not None:
@@ -499,26 +610,7 @@ class GoalIn(BaseModel):
 
 
 def _goal_progress(conn, g: dict) -> dict:
-    bal = None
-    if g["account_id"]:
-        r = conn.execute("SELECT balance FROM balance_snapshots WHERE account_id=? ORDER BY date DESC LIMIT 1", (g["account_id"],)).fetchone()
-        bal = r["balance"] if r else None
-    if g["kind"] == "payoff":
-        current = g["target_amount"] - abs(bal) if bal is not None else g["starting_amount"]
-    else:
-        current = bal if bal is not None else g["starting_amount"]
-    current = max(0.0, current)
-    remaining = max(0.0, g["target_amount"] - current)
-    months_left = None
-    if g["target_date"]:
-        td = date.fromisoformat(g["target_date"]); t = date.today()
-        months_left = max(0, (td.year - t.year) * 12 + td.month - t.month)
-    needed = round(remaining / months_left, 2) if months_left else None
-    eta_months = round(remaining / g["monthly_contribution"], 1) if g["monthly_contribution"] > 0 and remaining > 0 else (0 if remaining == 0 else None)
-    return {**g, "current": round(current, 2), "remaining": round(remaining, 2),
-            "pct": round(current / g["target_amount"], 3) if g["target_amount"] else 0,
-            "months_left": months_left, "needed_per_month": needed, "eta_months": eta_months,
-            "on_track": (needed is None or g["monthly_contribution"] >= needed) if remaining > 0 else True}
+    return personal.goal_progress(conn, g)
 
 
 @app.get("/api/goals")

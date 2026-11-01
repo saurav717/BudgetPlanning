@@ -156,6 +156,13 @@ CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT
 );
+
+CREATE TABLE IF NOT EXISTS fx_rates (
+    currency TEXT PRIMARY KEY,
+    per_usd REAL NOT NULL,             -- units of this currency per 1 USD
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    source TEXT NOT NULL DEFAULT 'default'
+);
 """
 
 DEFAULT_CATEGORIES = [
@@ -190,6 +197,9 @@ DEFAULT_CATEGORIES = [
     ("Taxes", "Other", "expense"),
     ("Fees & Charges", "Other", "expense"),
     ("Uncategorized", "Other", "expense"),
+    ("Family Support", "Remittances", "expense"),
+    ("International Transfer", "Remittances", "transfer"),
+    ("Retirement Contribution", "Transfer", "transfer"),
     ("Transfer", "Transfer", "transfer"),
     ("Credit Card Payment", "Transfer", "transfer"),
     ("Investment Contribution", "Transfer", "transfer"),
@@ -239,6 +249,90 @@ DEFAULT_RULES = [
 ]
 
 
+# Rules added after the first release; inserted once into existing databases by migrate().
+RULES_V2 = [
+    ("wise", "International Transfer", "Wise"), ("transferwise", "International Transfer", "Wise"),
+    ("remitly", "Family Support", "Remitly"), ("western union", "Family Support", "Western Union"),
+    ("xoom", "Family Support", "Xoom"), ("instarem", "International Transfer", "Instarem"),
+    ("money2india", "International Transfer", "ICICI Money2India"), ("remit2india", "International Transfer", "Remit2India"),
+    ("inward remittance", "International Transfer", "Inward remittance"), ("neft cr", "Transfer", ""), ("imps", "Transfer", ""),
+    ("401k", "Retirement Contribution", "401(k) contribution"), ("401(k)", "Retirement Contribution", "401(k) contribution"),
+    ("hsa contribution", "Retirement Contribution", "HSA contribution"), ("ira contribution", "Retirement Contribution", "IRA contribution"),
+    ("roth ira", "Retirement Contribution", "Roth IRA contribution"),
+    ("swiggy", "Restaurants & Bars", "Swiggy"), ("zomato", "Restaurants & Bars", "Zomato"), ("bigbasket", "Groceries", "BigBasket"),
+    ("patel brothers", "Groceries", "Patel Brothers"), ("india bazaar", "Groceries", "India Bazaar"), ("apna bazar", "Groceries", "Apna Bazar"),
+    ("air india", "Travel", "Air India"), ("emirates", "Travel", "Emirates"), ("qatar air", "Travel", "Qatar Airways"),
+    ("lufthansa", "Travel", "Lufthansa"), ("jio", "Internet & Phone", "Jio"), ("airtel", "Internet & Phone", "Airtel"),
+    ("uscis", "Fees & Charges", "USCIS"), ("lic premium", "Insurance", "LIC"),
+]
+
+ACCOUNT_COLUMNS = {"credit_limit": "REAL", "tax_type": "TEXT DEFAULT ''"}
+
+TX_VIEW = """
+DROP VIEW IF EXISTS tx_home;
+CREATE VIEW tx_home AS
+WITH home AS (SELECT COALESCE((SELECT value FROM settings WHERE key='home_currency'), 'USD') AS cur),
+rate AS (
+    SELECT a.id AS account_id, a.currency AS currency,
+           CASE WHEN a.currency = (SELECT cur FROM home) THEN 1.0
+                WHEN c.per_usd IS NULL OR h.per_usd IS NULL THEN 1.0
+                ELSE h.per_usd / c.per_usd END AS f
+    FROM accounts a
+    LEFT JOIN fx_rates c ON c.currency = a.currency
+    LEFT JOIN fx_rates h ON h.currency = (SELECT cur FROM home)
+)
+SELECT t.id, t.account_id, t.date, ROUND(t.amount * r.f, 2) AS amount, t.amount AS amount_native, r.currency,
+       t.description, t.merchant, t.category_id, t.notes, t.reviewed, t.pending, t.transfer_pair_id, t.hidden, t.source
+FROM transactions t JOIN rate r ON r.account_id = t.account_id
+WHERE NOT EXISTS (SELECT 1 FROM splits s WHERE s.transaction_id = t.id)
+UNION ALL
+SELECT t.id, t.account_id, t.date, ROUND(s.amount * r.f, 2), s.amount, r.currency,
+       t.description, t.merchant, s.category_id, COALESCE(NULLIF(s.notes,''), t.notes), t.reviewed, t.pending, t.transfer_pair_id, t.hidden, t.source
+FROM splits s JOIN transactions t ON t.id = s.transaction_id JOIN rate r ON r.account_id = t.account_id;
+"""
+
+DEFAULT_PER_USD = {"USD": 1.0, "INR": 88.5, "EUR": 0.86, "GBP": 0.75, "CAD": 1.39, "AUD": 1.52, "SGD": 1.29,
+                   "AED": 3.6725, "JPY": 150.0, "CHF": 0.80}
+
+
+def get_setting(conn: sqlite3.Connection, key: str, default=None):
+    import json
+    r = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+    if r is None or r[0] is None:
+        return default
+    try:
+        return json.loads(r[0])
+    except (ValueError, TypeError):
+        return r[0]
+
+
+def set_setting(conn: sqlite3.Connection, key: str, value) -> None:
+    import json
+    conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+                 (key, value if isinstance(value, str) and key == "home_currency" else json.dumps(value)))
+    conn.commit()
+
+
+def migrate(conn: sqlite3.Connection) -> None:
+    """Bring older databases up to date. Safe to run on every start."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(accounts)")}
+    for name, decl in ACCOUNT_COLUMNS.items():
+        if name not in cols:
+            conn.execute(f"ALTER TABLE accounts ADD COLUMN {name} {decl}")
+    conn.executemany('INSERT OR IGNORE INTO categories (name, "group", kind) VALUES (?, ?, ?)', DEFAULT_CATEGORIES)
+    conn.executemany("INSERT OR IGNORE INTO fx_rates (currency, per_usd) VALUES (?, ?)", DEFAULT_PER_USD.items())
+    version = int(conn.execute("SELECT COALESCE((SELECT value FROM settings WHERE key='rules_version'), '1')").fetchone()[0])
+    if version < 2:
+        cats = {r["name"]: r["id"] for r in conn.execute("SELECT id, name FROM categories")}
+        have = {r[0] for r in conn.execute("SELECT pattern FROM rules")}
+        # priority 500 sits above the generic v1 rules (e.g. 'transfer', 'payment') but below user rules (1)
+        conn.executemany("INSERT INTO rules (pattern, is_regex, category_id, rename_to, priority) VALUES (?, 0, ?, ?, ?)",
+                         [(p, cats[c], r, 500 + i) for i, (p, c, r) in enumerate(RULES_V2) if p not in have])
+        conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('rules_version', '2')")
+    conn.executescript(TX_VIEW)
+    conn.commit()
+
+
 def connect(path: Path | str | None = None) -> sqlite3.Connection:
     """Open (and initialise) the database."""
     p = Path(path) if path else DEFAULT_DB
@@ -269,6 +363,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
             rows,
         )
     conn.commit()
+    migrate(conn)
 
 
 def rows_to_dicts(rows) -> list[dict]:

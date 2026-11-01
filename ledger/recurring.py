@@ -25,24 +25,49 @@ def _period_days(label: str) -> int:
     return dict((l, d) for l, d, _ in CADENCES)[label]
 
 
-def detect_recurring(conn: sqlite3.Connection, min_occurrences: int = 3, lookback_days: int = 400) -> list[dict]:
+MONTH_STEPS = {"monthly": 1, "quarterly": 3, "yearly": 12}
+
+
+def add_months(d: date, n: int, anchor_day: int | None = None) -> date:
+    """Calendar-month step that keeps the day of month (clamped for short months), so bills don't drift."""
+    import calendar
+    m = d.month - 1 + n
+    y, m = d.year + m // 12, m % 12 + 1
+    day = min(anchor_day or d.day, calendar.monthrange(y, m)[1])
+    return date(y, m, day)
+
+
+def step(d: date, cadence: str, anchor_day: int | None = None) -> date:
+    if cadence in MONTH_STEPS:
+        return add_months(d, MONTH_STEPS[cadence], anchor_day)
+    return d + timedelta(days=_period_days(cadence))
+
+
+def detect_recurring(conn: sqlite3.Connection, min_occurrences: int = 3, lookback_days: int = 400,
+                     include_transfers: bool = False) -> list[dict]:
+    """Recurring bills/income. include_transfers adds regular moves between accounts (savings, investing,
+    remittances) which matter for a cash forecast but aren't spending."""
     since = (date.today() - timedelta(days=lookback_days)).isoformat()
+    transfer_clause = "" if include_transfers else "AND t.transfer_pair_id IS NULL AND (c.kind IS NULL OR c.kind != 'transfer')"
     rows = conn.execute(
-        "SELECT t.id, t.date, t.amount, t.merchant, t.category_id, t.account_id, c.name AS category "
-        "FROM transactions t LEFT JOIN categories c ON c.id=t.category_id "
-        "WHERE t.date >= ? AND t.hidden = 0 AND t.transfer_pair_id IS NULL AND t.pending = 0 "
+        "SELECT t.id, t.date, t.amount, t.merchant, t.category_id, t.account_id, c.name AS category, c.kind AS category_kind "
+        "FROM tx_home t LEFT JOIN categories c ON c.id=t.category_id "
+        f"WHERE t.date >= ? AND t.hidden = 0 AND t.pending = 0 {transfer_clause} "
         "ORDER BY t.date", (since,)
     ).fetchall()
     overrides = {r["merchant_key"]: r for r in conn.execute("SELECT * FROM recurring_overrides")}
     category_groups = {r["id"]: r["group"] for r in conn.execute('SELECT id, "group" FROM categories')}
     groups: dict[tuple[str, int], list] = {}
     for r in rows:
-        groups.setdefault((merchant_key(r["merchant"]), 1 if r["amount"] > 0 else -1), []).append(r)
+        key = merchant_key(r["merchant"])
+        if include_transfers:
+            key = f"{key}@{r['account_id']}"  # the two legs of a transfer live in different accounts
+        groups.setdefault((key, 1 if r["amount"] > 0 else -1), []).append(r)
 
     out = []
     today = date.today()
     for (key, sign), txs in groups.items():
-        ov = overrides.get(key)
+        ov = overrides.get(key.split("@")[0])
         if ov and ov["status"] == "ignored":
             continue
         if len(txs) < min_occurrences and not (ov and ov["status"] == "confirmed"):
@@ -65,16 +90,18 @@ def detect_recurring(conn: sqlite3.Connection, min_occurrences: int = 3, lookbac
         cad = cad or "monthly"
         last = dates[-1]
         period = _period_days(cad)
-        nxt = last + timedelta(days=period)
+        anchor = statistics.median_low([d.day for d in dates[-4:]]) if cad in MONTH_STEPS else None
+        nxt = step(last, cad, anchor)
         while nxt < today - timedelta(days=period // 2):  # catch up if we missed detecting a cycle
-            nxt += timedelta(days=period)
+            nxt = step(nxt, cad, anchor)
         out.append({
-            "merchant_key": key,
+            "merchant_key": key.split("@")[0],
             "merchant": (ov["display_name"] if ov and ov["display_name"] else stable[-1]["merchant"]),
             "category": stable[-1]["category"],
             "category_id": stable[-1]["category_id"],
             "account_id": stable[-1]["account_id"],
             "kind": "income" if sign > 0 else "expense",
+            "is_transfer": stable[-1]["category_kind"] == "transfer",
             "cadence": cad,
             "amount": round(sign * med_amt, 2),
             "last_date": last.isoformat(),
@@ -84,6 +111,7 @@ def detect_recurring(conn: sqlite3.Connection, min_occurrences: int = 3, lookbac
             "monthly_equivalent": round(sign * med_amt * 30.4 / period, 2),
             "status": ov["status"] if ov else "detected",
             "overdue": nxt < today,
+            "anchor_day": anchor,
         })
     out.sort(key=lambda r: r["next_date"])
     return out

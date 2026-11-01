@@ -77,7 +77,7 @@ def generate(conn: sqlite3.Connection) -> list[dict]:
 
     # 4. Unusual transactions this month (3x the category's typical charge)
     rows = conn.execute(
-        f"""SELECT t.id, t.merchant, t.amount, t.date, t.category_id, c.name AS category FROM transactions t
+        f"""SELECT t.id, t.merchant, t.amount, t.date, t.category_id, c.name AS category FROM tx_home t
             LEFT JOIN categories c ON c.id=t.category_id WHERE t.date BETWEEN ? AND ? AND t.amount < -50 AND {reports.REAL_MONEY}""",
         (start, end)).fetchall()
     for t in rows:

@@ -5,6 +5,8 @@ import calendar
 import sqlite3
 from datetime import date, timedelta
 
+from . import fx
+
 LIABILITY_TYPES = ("credit", "loan")
 
 # Only money that actually left or entered the household counts. Transfers between your
@@ -36,16 +38,18 @@ def account_balances(conn: sqlite3.Connection, as_of: str | None = None) -> list
     as_of = as_of or date.today().isoformat()
     rows = conn.execute(
         """SELECT a.id, a.name, a.type, a.institution, a.currency, a.archived, a.include_in_net_worth,
-                  a.plaid_item_id, a.import_profile,
+                  a.plaid_item_id, a.import_profile, a.credit_limit, a.tax_type,
                   (SELECT balance FROM balance_snapshots b WHERE b.account_id=a.id AND b.date<=? ORDER BY b.date DESC LIMIT 1) AS balance,
                   (SELECT date FROM balance_snapshots b WHERE b.account_id=a.id AND b.date<=? ORDER BY b.date DESC LIMIT 1) AS balance_date,
                   (SELECT COUNT(*) FROM transactions t WHERE t.account_id=a.id) AS tx_count,
                   (SELECT MAX(date) FROM transactions t WHERE t.account_id=a.id) AS last_tx_date
            FROM accounts a ORDER BY a.archived, a.type, a.name""", (as_of, as_of)).fetchall()
     out = []
+    home = fx.home_currency(conn)
     for r in rows:
         d = dict(r)
         d["balance"] = d["balance"] if d["balance"] is not None else 0.0
+        d["balance_home"] = fx.convert(conn, d["balance"], d["currency"] or home, home)
         d["is_liability"] = d["type"] in LIABILITY_TYPES
         out.append(d)
     return out
@@ -53,11 +57,11 @@ def account_balances(conn: sqlite3.Connection, as_of: str | None = None) -> list
 
 def net_worth(conn: sqlite3.Connection, as_of: str | None = None) -> dict:
     accts = [a for a in account_balances(conn, as_of) if not a["archived"] and a["include_in_net_worth"]]
-    assets = sum(a["balance"] for a in accts if a["balance"] > 0)
-    liabilities = sum(a["balance"] for a in accts if a["balance"] < 0)
+    assets = sum(a["balance_home"] for a in accts if a["balance_home"] > 0)
+    liabilities = sum(a["balance_home"] for a in accts if a["balance_home"] < 0)
     by_type: dict[str, float] = {}
     for a in accts:
-        by_type[a["type"]] = round(by_type.get(a["type"], 0) + a["balance"], 2)
+        by_type[a["type"]] = round(by_type.get(a["type"], 0) + a["balance_home"], 2)
     return {"net_worth": round(assets + liabilities, 2), "assets": round(assets, 2),
             "liabilities": round(liabilities, 2), "by_type": by_type, "as_of": as_of or date.today().isoformat()}
 
@@ -84,7 +88,7 @@ def cashflow(conn: sqlite3.Connection, months: int = 12) -> list[dict]:
         f"""SELECT substr(t.date,1,7) AS month,
                    SUM(CASE WHEN t.amount > 0 THEN t.amount ELSE 0 END) AS income,
                    SUM(CASE WHEN t.amount < 0 THEN -t.amount ELSE 0 END) AS expenses
-            FROM transactions t LEFT JOIN categories c ON c.id=t.category_id
+            FROM tx_home t LEFT JOIN categories c ON c.id=t.category_id
             WHERE t.date >= ? AND {REAL_MONEY}
             GROUP BY month ORDER BY month""", (start,)).fetchall()
     by = {r["month"]: r for r in rows}
@@ -108,7 +112,7 @@ def spending_by_category(conn: sqlite3.Connection, start: str, end: str, account
         f"""SELECT c.id AS category_id, COALESCE(c.name,'Uncategorized') AS category, COALESCE(c."group",'Other') AS "group",
                    COALESCE(c.kind,'expense') AS kind,
                    SUM(-t.amount) AS spent, COUNT(*) AS count
-            FROM transactions t LEFT JOIN categories c ON c.id=t.category_id
+            FROM tx_home t LEFT JOIN categories c ON c.id=t.category_id
             WHERE t.date BETWEEN ? AND ? AND t.amount < 0 AND {REAL_MONEY} {acct}
             GROUP BY c.id ORDER BY spent DESC""", params).fetchall()
     return [dict(r, spent=round(r["spent"], 2)) for r in rows]
@@ -126,7 +130,7 @@ def spending_by_group(conn: sqlite3.Connection, start: str, end: str) -> list[di
 def top_merchants(conn: sqlite3.Connection, start: str, end: str, limit: int = 15) -> list[dict]:
     rows = conn.execute(
         f"""SELECT t.merchant, SUM(-t.amount) AS spent, COUNT(*) AS count
-            FROM transactions t LEFT JOIN categories c ON c.id=t.category_id
+            FROM tx_home t LEFT JOIN categories c ON c.id=t.category_id
             WHERE t.date BETWEEN ? AND ? AND t.amount < 0 AND {REAL_MONEY}
             GROUP BY lower(t.merchant) ORDER BY spent DESC LIMIT ?""", (start, end, limit)).fetchall()
     return [dict(r, spent=round(r["spent"], 2)) for r in rows]
@@ -135,7 +139,7 @@ def top_merchants(conn: sqlite3.Connection, start: str, end: str, limit: int = 1
 def category_trend(conn: sqlite3.Connection, category_id: int, months: int = 12) -> list[dict]:
     start = month_bounds(shift_month(this_month(), -(months - 1)))[0]
     rows = conn.execute(
-        f"""SELECT substr(t.date,1,7) AS month, SUM(-t.amount) AS spent FROM transactions t
+        f"""SELECT substr(t.date,1,7) AS month, SUM(-t.amount) AS spent FROM tx_home t
             LEFT JOIN categories c ON c.id=t.category_id
             WHERE t.category_id=? AND t.date>=? AND t.amount<0 AND {REAL_MONEY} GROUP BY month""",
         (category_id, start)).fetchall()
@@ -146,7 +150,7 @@ def category_trend(conn: sqlite3.Connection, category_id: int, months: int = 12)
 def sankey(conn: sqlite3.Connection, start: str, end: str) -> dict:
     """Income sources -> 'Budget' -> category groups -> categories (for a cash-flow sankey)."""
     inc = conn.execute(
-        f"""SELECT COALESCE(c.name,'Other Income') AS name, SUM(t.amount) AS v FROM transactions t
+        f"""SELECT COALESCE(c.name,'Other Income') AS name, SUM(t.amount) AS v FROM tx_home t
             LEFT JOIN categories c ON c.id=t.category_id
             WHERE t.date BETWEEN ? AND ? AND t.amount>0 AND {REAL_MONEY} GROUP BY c.id""", (start, end)).fetchall()
     links = [{"source": r["name"], "target": "Cash flow", "value": round(r["v"], 2)} for r in inc]
@@ -187,7 +191,7 @@ def _rollover(conn, category_id: int, month: str, depth: int = 12) -> float:
         if b is not None:
             s, e = month_bounds(m)
             spent = conn.execute(
-                f"SELECT COALESCE(SUM(-t.amount),0) FROM transactions t LEFT JOIN categories c ON c.id=t.category_id "
+                f"SELECT COALESCE(SUM(-t.amount),0) FROM tx_home t LEFT JOIN categories c ON c.id=t.category_id "
                 f"WHERE t.category_id=? AND t.date BETWEEN ? AND ? AND t.amount<0 AND {REAL_MONEY}",
                 (category_id, s, e)).fetchone()[0]
             carry = carry + b - spent
@@ -200,7 +204,7 @@ def budget_status(conn: sqlite3.Connection, month: str | None = None) -> dict:
     start, end = month_bounds(month)
     spent_rows = {r["category_id"]: r for r in spending_by_category(conn, start, end)}
     income_rows = conn.execute(
-        f"""SELECT c.id AS category_id, SUM(t.amount) AS earned FROM transactions t LEFT JOIN categories c ON c.id=t.category_id
+        f"""SELECT c.id AS category_id, SUM(t.amount) AS earned FROM tx_home t LEFT JOIN categories c ON c.id=t.category_id
             WHERE t.date BETWEEN ? AND ? AND t.amount>0 AND {REAL_MONEY} GROUP BY c.id""", (start, end)).fetchall()
     earned = {r["category_id"]: round(r["earned"], 2) for r in income_rows}
     cats = conn.execute('SELECT * FROM categories WHERE archived=0 ORDER BY "group", name').fetchall()
@@ -260,8 +264,8 @@ def safe_to_spend(conn: sqlite3.Connection, upcoming: list[dict]) -> dict:
     Monarch shows balances; this answers the question people actually have: 'can I afford this?'
     """
     accts = [a for a in account_balances(conn) if not a["archived"]]
-    liquid = sum(a["balance"] for a in accts if a["type"] in ("checking", "cash") and a["balance"] > 0)
-    cards = -sum(a["balance"] for a in accts if a["type"] == "credit" and a["balance"] < 0)
+    liquid = sum(a["balance_home"] for a in accts if a["type"] in ("checking", "cash") and a["balance_home"] > 0)
+    cards = -sum(a["balance_home"] for a in accts if a["type"] == "credit" and a["balance_home"] < 0)
     incomes = [u for u in upcoming if u["kind"] == "income" and u["days_until"] >= 0]
     horizon = min((u["days_until"] for u in incomes), default=30)
     bills = [u for u in upcoming if u["kind"] == "expense" and 0 <= u["days_until"] <= horizon]
